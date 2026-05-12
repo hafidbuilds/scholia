@@ -1,7 +1,7 @@
 use scholia_core::{
     BookDocument, BudgetPreset, ChunkingMode, ContentDocument, ContentKind, ContentNode,
     EpubError, GeneratedMarkdown, GeneratedMarkdownChunk, LocationSource, ModelProfileId,
-    PacketOptions, SpineItem, TaskMode, TocNode,
+    PacketOptions, SelectionRange, SpineItem, TaskMode, TocNode,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -117,12 +117,23 @@ struct GeneratedMarkdownChunkDto {
 struct GenerateStudyPacketRequestDto {
     path: String,
     spine_item_id: String,
+    range: PacketRangeDto,
     task_mode: String,
     model_profile: String,
     budget_preset: String,
     custom_budget_tokens: Option<usize>,
     chunking: String,
     custom_instruction: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum PacketRangeDto {
+    Chapter,
+    Selection {
+        start_node_id: String,
+        end_node_id: String,
+    },
 }
 
 #[tauri::command]
@@ -146,11 +157,23 @@ fn generate_study_packet(
         chunking: parse_chunking_mode(&request.chunking)?,
         custom_instruction: request.custom_instruction,
     };
-    let packet = scholia_core::generate_chapter_study_packet(
-        &book,
-        &request.spine_item_id,
-        &options,
-    )?;
+    let packet = match request.range {
+        PacketRangeDto::Chapter => {
+            scholia_core::generate_chapter_study_packet(&book, &request.spine_item_id, &options)?
+        }
+        PacketRangeDto::Selection {
+            start_node_id,
+            end_node_id,
+        } => scholia_core::generate_selection_study_packet(
+            &book,
+            &request.spine_item_id,
+            &SelectionRange {
+                start_node_id,
+                end_node_id,
+            },
+            &options,
+        )?,
+    };
     Ok(packet.into())
 }
 

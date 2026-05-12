@@ -11,6 +11,7 @@ import type {
   GeneratedMarkdown,
   GeneratedMarkdownChunk,
   ModelProfile,
+  PacketRange,
   SpineItem,
   TaskMode,
   TocNode,
@@ -72,6 +73,9 @@ function App() {
   const [chunking, setChunking] = useState<ChunkingMode>("auto");
   const [customInstruction, setCustomInstruction] = useState("");
   const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
+  const [selectedRange, setSelectedRange] = useState<PacketRange>({
+    type: "chapter",
+  });
 
   const activeSpine = useMemo(() => {
     if (!book) return null;
@@ -94,11 +98,13 @@ function App() {
       setMarkdownPacket(null);
       setCopyState("idle");
       setSelectedChunkIndex(0);
+      setSelectedRange({ type: "chapter" });
     } catch (err) {
       setBook(null);
       setActiveSpineId(null);
       setMarkdownPacket(null);
       setSelectedChunkIndex(0);
+      setSelectedRange({ type: "chapter" });
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -122,6 +128,7 @@ function App() {
     setMarkdownPacket(null);
     setCopyState("idle");
     setSelectedChunkIndex(0);
+    setSelectedRange({ type: "chapter" });
   }
 
   async function handleGenerateMarkdown() {
@@ -139,6 +146,7 @@ function App() {
           budgetPreset === "custom" ? customBudgetTokens : undefined,
         chunking,
         customInstruction,
+        range: selectedRange,
       });
       setMarkdownPacket(packet);
       setSelectedChunkIndex(0);
@@ -213,7 +221,15 @@ function App() {
             )}
           </aside>
 
-          <Reader spine={activeSpine} />
+          <Reader
+            spine={activeSpine}
+            onSelectionChange={(range) => {
+              setSelectedRange(range);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+              setSelectedChunkIndex(0);
+            }}
+          />
           <MarkdownPanel
             packet={markdownPacket}
             spine={activeSpine}
@@ -226,6 +242,13 @@ function App() {
             chunking={chunking}
             customInstruction={customInstruction}
             selectedChunkIndex={selectedChunkIndex}
+            selectedRange={selectedRange}
+            onRangeChange={(range) => {
+              setSelectedRange(range);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+              setSelectedChunkIndex(0);
+            }}
             onTaskModeChange={(value) => {
               setTaskMode(value);
               setMarkdownPacket(null);
@@ -297,6 +320,8 @@ function MarkdownPanel({
   chunking,
   customInstruction,
   selectedChunkIndex,
+  selectedRange,
+  onRangeChange,
   onTaskModeChange,
   onModelProfileChange,
   onBudgetPresetChange,
@@ -319,6 +344,8 @@ function MarkdownPanel({
   chunking: ChunkingMode;
   customInstruction: string;
   selectedChunkIndex: number;
+  selectedRange: PacketRange;
+  onRangeChange: (range: PacketRange) => void;
   onTaskModeChange: (taskMode: TaskMode) => void;
   onModelProfileChange: (profile: ModelProfile) => void;
   onBudgetPresetChange: (budget: BudgetPreset) => void;
@@ -346,6 +373,31 @@ function MarkdownPanel({
       </header>
 
       <div className="packet-controls">
+        <label>
+          <span>Range</span>
+          <select
+            value={selectedRange.type}
+            onChange={(event) => {
+              if (event.target.value === "chapter") {
+                onRangeChange({ type: "chapter" });
+              } else if (selectedRange.type === "selection") {
+                onRangeChange(selectedRange);
+              }
+            }}
+          >
+            <option value="chapter">Chapter</option>
+            {selectedRange.type === "selection" ? (
+              <option value="selection">Selection</option>
+            ) : null}
+          </select>
+        </label>
+
+        {selectedRange.type === "selection" ? (
+          <div className="selection-range">
+            {selectedRange.startNodeId} to {selectedRange.endNodeId}
+          </div>
+        ) : null}
+
         <label>
           <span>Task</span>
           <select
@@ -581,7 +633,20 @@ function SpineList({
   );
 }
 
-function Reader({ spine }: { spine: SpineItem | null }) {
+function Reader({
+  spine,
+  onSelectionChange,
+}: {
+  spine: SpineItem | null;
+  onSelectionChange: (range: PacketRange) => void;
+}) {
+  function handleSelection() {
+    const range = getCurrentNodeSelectionRange();
+    if (range) {
+      onSelectionChange(range);
+    }
+  }
+
   if (!spine) {
     return (
       <article className="reader">
@@ -591,7 +656,11 @@ function Reader({ spine }: { spine: SpineItem | null }) {
   }
 
   return (
-    <article className="reader">
+    <article
+      className="reader"
+      onKeyUp={handleSelection}
+      onMouseUp={handleSelection}
+    >
       <header className="reader-header">
         <span>{spine.href}</span>
         <strong>{spine.content.nodes.length} nodes</strong>
@@ -603,6 +672,41 @@ function Reader({ spine }: { spine: SpineItem | null }) {
       </div>
     </article>
   );
+}
+
+function getCurrentNodeSelectionRange(): PacketRange | null {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  const startElement = nodeElement(range.startContainer)?.closest(
+    "[data-node-id]",
+  );
+  const endElement = nodeElement(range.endContainer)?.closest("[data-node-id]");
+  if (
+    !(startElement instanceof HTMLElement) ||
+    !(endElement instanceof HTMLElement)
+  ) {
+    return null;
+  }
+
+  const position = startElement.compareDocumentPosition(endElement);
+  const isReversed = Boolean(position & Node.DOCUMENT_POSITION_PRECEDING);
+  const first = isReversed ? endElement : startElement;
+  const last = isReversed ? startElement : endElement;
+  const startNodeId = first.dataset.nodeId;
+  const endNodeId = last.dataset.nodeId;
+  if (!startNodeId || !endNodeId) {
+    return null;
+  }
+
+  return { type: "selection", startNodeId, endNodeId };
+}
+
+function nodeElement(node: Node): Element | null {
+  return node instanceof Element ? node : node.parentElement;
 }
 
 function ContentBlock({ node }: { node: ContentNode }) {

@@ -99,4 +99,9 @@ export type StudyPacketOptions = {
   customBudgetTokens?: number;
   chunking: ChunkingMode;
   customInstruction?: string;
+  range: PacketRange;
 };
+
+export type PacketRange =
+  | { type: "chapter" }
+  | { type: "selection"; startNodeId: string; endNodeId: string };

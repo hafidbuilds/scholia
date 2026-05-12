@@ -240,6 +240,16 @@ textarea {
   resize: vertical;
 }
 
+.selection-range {
+  background: #f6f6f3;
+  border: 1px solid #d9d9d2;
+  border-radius: 6px;
+  color: #5f625a;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding: 7px 9px;
+}
+
 .packet-meta {
   display: grid;
   gap: 10px;

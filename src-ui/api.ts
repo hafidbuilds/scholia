@@ -14,6 +14,7 @@ export async function generateStudyPacket(
     request: {
       path,
       spineItemId,
+      range: options.range,
       taskMode: options.taskMode,
       modelProfile: options.modelProfile,
       budgetPreset: options.budgetPreset,

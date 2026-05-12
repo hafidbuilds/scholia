@@ -24,6 +24,10 @@ pub enum EpubError {
     MissingManifestItem(String),
     #[error("spine item is missing: {0}")]
     MissingSpineItem(String),
+    #[error("selection node is missing: {0}")]
+    MissingSelectionNode(String),
+    #[error("selection range is invalid")]
+    InvalidSelectionRange,
     #[error("XML parse error in {path}: {source}")]
     Xml {
         path: String,
@@ -180,6 +184,12 @@ pub struct PacketOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionRange {
+    pub start_node_id: String,
+    pub end_node_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelProfile {
     pub id: ModelProfileId,
     pub name: &'static str,
@@ -305,24 +315,67 @@ pub fn generate_chapter_study_packet(
         .iter()
         .find(|item| item.id == spine_item_id)
         .ok_or_else(|| EpubError::MissingSpineItem(spine_item_id.to_string()))?;
+    generate_study_packet_for_nodes(book, spine_item, 0..spine_item.content.nodes.len(), options)
+}
+
+pub fn generate_selection_study_packet(
+    book: &BookDocument,
+    spine_item_id: &str,
+    selection: &SelectionRange,
+    options: &PacketOptions,
+) -> Result<GeneratedMarkdown, EpubError> {
+    let spine_item = book
+        .spine
+        .iter()
+        .find(|item| item.id == spine_item_id)
+        .ok_or_else(|| EpubError::MissingSpineItem(spine_item_id.to_string()))?;
+    let start = resolve_node_index(&spine_item.content.nodes, &selection.start_node_id)
+        .ok_or_else(|| EpubError::MissingSelectionNode(selection.start_node_id.clone()))?;
+    let end = resolve_node_index(&spine_item.content.nodes, &selection.end_node_id)
+        .ok_or_else(|| EpubError::MissingSelectionNode(selection.end_node_id.clone()))?;
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    if start >= spine_item.content.nodes.len() || end >= spine_item.content.nodes.len() {
+        return Err(EpubError::InvalidSelectionRange);
+    }
+
+    generate_study_packet_for_nodes(book, spine_item, start..end + 1, options)
+}
+
+fn generate_study_packet_for_nodes(
+    book: &BookDocument,
+    spine_item: &SpineItem,
+    node_range: Range<usize>,
+    options: &PacketOptions,
+) -> Result<GeneratedMarkdown, EpubError> {
+    if node_range.is_empty() || node_range.end > spine_item.content.nodes.len() {
+        return Err(EpubError::InvalidSelectionRange);
+    }
+
+    let selected_nodes = &spine_item.content.nodes[node_range.clone()];
     let chapter = spine_item
         .title
         .as_deref()
         .or_else(|| first_heading_text(&spine_item.content.nodes))
         .unwrap_or(&spine_item.href);
-    let heading_ancestry = heading_ancestry(&spine_item.content.nodes);
+    let heading_ancestry = heading_ancestry_for_range(&spine_item.content.nodes, node_range.start);
     let profile = model_profile(options.model_profile);
     let instruction = task_instruction(options.task_mode, options.custom_instruction.as_deref());
     let budget_tokens = budget_tokens(options.budget_preset, options.custom_budget_tokens)
         .unwrap_or(profile.default_budget_tokens);
-    let chunk_ranges = chunk_nodes(&spine_item.content.nodes, budget_tokens, options.chunking);
+    let chunk_ranges = chunk_nodes(selected_nodes, budget_tokens, options.chunking);
     let total_chunks = chunk_ranges.len().max(1);
     let chunks: Vec<GeneratedMarkdownChunk> = chunk_ranges
         .iter()
         .enumerate()
         .map(|(index, range)| {
             let chunk_number = index + 1;
-            let chunk_excerpt = render_nodes_as_markdown(&spine_item.content.nodes[range.clone()]);
+            let absolute_range = node_range.start + range.start..node_range.start + range.end;
+            let chunk_excerpt =
+                render_nodes_as_markdown(&spine_item.content.nodes[absolute_range.clone()]);
             let chunk_tokens = estimate_tokens(&chunk_excerpt);
             let markdown = render_packet_markdown(PacketRenderInput {
                 book,
@@ -337,16 +390,16 @@ pub fn generate_chapter_study_packet(
                 budget_tokens,
                 chunk_number,
                 total_chunks,
-                start_node_id: spine_item.content.nodes[range.start].id.as_str(),
-                end_node_id: spine_item.content.nodes[range.end - 1].id.as_str(),
+                start_node_id: spine_item.content.nodes[absolute_range.start].id.as_str(),
+                end_node_id: spine_item.content.nodes[absolute_range.end - 1].id.as_str(),
             });
             GeneratedMarkdownChunk {
                 markdown,
                 estimated_tokens: chunk_tokens,
                 chunk_number,
                 total_chunks,
-                start_node_id: Some(spine_item.content.nodes[range.start].id.clone()),
-                end_node_id: Some(spine_item.content.nodes[range.end - 1].id.clone()),
+                start_node_id: Some(spine_item.content.nodes[absolute_range.start].id.clone()),
+                end_node_id: Some(spine_item.content.nodes[absolute_range.end - 1].id.clone()),
             }
         })
         .collect();
@@ -364,6 +417,12 @@ pub fn generate_chapter_study_packet(
         heading_ancestry,
         location: spine_item.href.clone(),
         chunks,
+    })
+}
+
+fn resolve_node_index(nodes: &[ContentNode], node_id: &str) -> Option<usize> {
+    nodes.iter().position(|node| {
+        node.id == node_id || node.children.iter().any(|child| child.id == node_id)
     })
 }
 
@@ -641,6 +700,20 @@ fn heading_ancestry(nodes: &[ContentNode]) -> Vec<String> {
         .filter(|node| node.kind == ContentKind::Heading)
         .filter_map(|node| node.text.clone())
         .collect()
+}
+
+fn heading_ancestry_for_range(nodes: &[ContentNode], start_index: usize) -> Vec<String> {
+    let ancestry = nodes
+        .iter()
+        .take(start_index + 1)
+        .filter(|node| node.kind == ContentKind::Heading)
+        .filter_map(|node| node.text.clone())
+        .collect::<Vec<_>>();
+    if ancestry.is_empty() {
+        heading_ancestry(nodes)
+    } else {
+        ancestry
+    }
 }
 
 fn first_heading_text(nodes: &[ContentNode]) -> Option<&str> {
@@ -1418,6 +1491,42 @@ mod tests {
         assert_eq!(packet.chunks[0].total_chunks, packet.chunks.len());
         assert!(packet.chunks[0].start_node_id.is_some());
         assert!(packet.chunks[0].end_node_id.is_some());
+    }
+
+    #[test]
+    fn generates_study_packet_from_selection_node_range() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let packet = generate_selection_study_packet(
+            &book,
+            "ch1",
+            &SelectionRange {
+                start_node_id: "ch1_000002".to_string(),
+                end_node_id: "ch1_000002".to_string(),
+            },
+            &PacketOptions {
+                task_mode: TaskMode::Summarize,
+                model_profile: ModelProfileId::Generic,
+                budget_preset: BudgetPreset::Medium,
+                custom_budget_tokens: None,
+                chunking: ChunkingMode::Auto,
+                custom_instruction: None,
+            },
+        )
+        .expect("selection renders");
+
+        assert!(
+            packet
+                .markdown
+                .contains("Replication keeps copies of data.")
+        );
+        assert!(!packet.markdown.contains("- Leader"));
+        assert_eq!(packet.chunks.len(), 1);
+        assert_eq!(
+            packet.chunks[0].start_node_id.as_deref(),
+            Some("ch1_000002")
+        );
+        assert_eq!(packet.chunks[0].end_node_id.as_deref(), Some("ch1_000002"));
     }
 
     #[test]
