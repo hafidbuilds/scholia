@@ -156,6 +156,7 @@ fn generate_study_packet(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![open_book, generate_study_packet])
         .run(tauri::generate_context!())
         .expect("error while running Scholia");

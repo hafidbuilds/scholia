@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 import { generateStudyPacket, openBook } from "./api";
 import type {
@@ -82,14 +83,12 @@ function App() {
     );
   }, [activeSpineId, book]);
 
-  async function handleOpen(event: React.FormEvent) {
-    event.preventDefault();
-    if (!path.trim()) return;
-
+  async function openBookPath(nextPath: string) {
     setLoading(true);
     setError(null);
     try {
-      const opened = await openBook(path.trim());
+      const opened = await openBook(nextPath);
+      setPath(nextPath);
       setBook(opened);
       setActiveSpineId(opened.spine[0]?.id ?? null);
       setMarkdownPacket(null);
@@ -103,6 +102,24 @@ function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleOpen(event: React.FormEvent) {
+    event.preventDefault();
+    if (!path.trim()) return;
+    await openBookPath(path.trim());
+  }
+
+  async function handleChooseFile() {
+    setError(null);
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: "EPUB", extensions: ["epub"] }],
+    });
+
+    if (typeof selected === "string") {
+      await openBookPath(selected);
     }
   }
 
@@ -172,10 +189,13 @@ function App() {
           <p>Desktop EPUB study companion</p>
         </div>
         <form className="open-form" onSubmit={handleOpen}>
+          <button disabled={loading} onClick={handleChooseFile} type="button">
+            Choose EPUB
+          </button>
           <input
             value={path}
             onChange={(event) => setPath(event.target.value)}
-            placeholder="/path/to/book.epub"
+            placeholder="No EPUB selected"
             aria-label="EPUB file path"
           />
           <button disabled={loading || !path.trim()} type="submit">
