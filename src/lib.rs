@@ -117,6 +117,46 @@ pub struct GeneratedMarkdown {
     pub location: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskMode {
+    ExplainConcept,
+    ExplainTerm,
+    Analogy,
+    Diagram,
+    Quiz,
+    Exercises,
+    CheckUnderstanding,
+    Summarize,
+    KeyDefinitions,
+    ExtractTechnicalDetails,
+    CompareConcepts,
+    Flashcards,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelProfileId {
+    Generic,
+    ChatGpt,
+    Claude,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PacketOptions {
+    pub task_mode: TaskMode,
+    pub model_profile: ModelProfileId,
+    pub custom_instruction: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelProfile {
+    pub id: ModelProfileId,
+    pub name: &'static str,
+    pub default_budget_tokens: usize,
+    pub prefer_xml_tags: bool,
+    pub prefer_markdown: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpfPackage {
     title: Option<String>,
@@ -210,6 +250,22 @@ pub fn generate_chapter_markdown(
     book: &BookDocument,
     spine_item_id: &str,
 ) -> Result<GeneratedMarkdown, EpubError> {
+    generate_chapter_study_packet(
+        book,
+        spine_item_id,
+        &PacketOptions {
+            task_mode: TaskMode::Summarize,
+            model_profile: ModelProfileId::Generic,
+            custom_instruction: None,
+        },
+    )
+}
+
+pub fn generate_chapter_study_packet(
+    book: &BookDocument,
+    spine_item_id: &str,
+    options: &PacketOptions,
+) -> Result<GeneratedMarkdown, EpubError> {
     let spine_item = book
         .spine
         .iter()
@@ -223,13 +279,17 @@ pub fn generate_chapter_markdown(
         .unwrap_or(&spine_item.href);
     let heading_ancestry = heading_ancestry(&spine_item.content.nodes);
     let estimated_tokens = estimate_tokens(&excerpt);
+    let profile = model_profile(options.model_profile);
+    let instruction = task_instruction(options.task_mode, options.custom_instruction.as_deref());
 
     let mut markdown = String::new();
-    markdown.push_str("# Extracted Markdown\n\n");
+    markdown.push_str("# Study Packet\n\n");
     markdown.push_str("## Metadata\n\n");
     markdown.push_str(&format!("Book: {}\n", book.title));
     markdown.push_str(&format!("Author: {}\n", book.authors.join(", ")));
     markdown.push_str(&format!("Chapter: {chapter}\n"));
+    markdown.push_str(&format!("Model profile: {}\n", profile.name));
+    markdown.push_str(&format!("Task: {}\n", task_mode_name(options.task_mode)));
     markdown.push_str("Section path:\n");
     if heading_ancestry.is_empty() {
         markdown.push_str("- <none detected>\n");
@@ -240,6 +300,9 @@ pub fn generate_chapter_markdown(
     }
     markdown.push_str(&format!("Location: {}\n", spine_item.href));
     markdown.push_str(&format!("Estimated tokens: {estimated_tokens}\n\n"));
+    markdown.push_str("## Task\n\n");
+    markdown.push_str(&instruction);
+    markdown.push_str("\n\n");
     markdown.push_str("## Excerpt\n\n");
     markdown.push_str("```markdown\n");
     markdown.push_str(excerpt.trim());
@@ -251,6 +314,96 @@ pub fn generate_chapter_markdown(
         heading_ancestry,
         location: spine_item.href.clone(),
     })
+}
+
+pub fn model_profile(id: ModelProfileId) -> ModelProfile {
+    match id {
+        ModelProfileId::Generic => ModelProfile {
+            id,
+            name: "Generic LLM",
+            default_budget_tokens: 12_000,
+            prefer_xml_tags: false,
+            prefer_markdown: true,
+        },
+        ModelProfileId::ChatGpt => ModelProfile {
+            id,
+            name: "ChatGPT",
+            default_budget_tokens: 12_000,
+            prefer_xml_tags: false,
+            prefer_markdown: true,
+        },
+        ModelProfileId::Claude => ModelProfile {
+            id,
+            name: "Claude",
+            default_budget_tokens: 32_000,
+            prefer_xml_tags: true,
+            prefer_markdown: true,
+        },
+    }
+}
+
+pub fn task_mode_name(task_mode: TaskMode) -> &'static str {
+    match task_mode {
+        TaskMode::ExplainConcept => "Explain concept",
+        TaskMode::ExplainTerm => "Explain unfamiliar term",
+        TaskMode::Analogy => "Explain with analogy",
+        TaskMode::Diagram => "Generate diagram prompt",
+        TaskMode::Quiz => "Quiz me one question at a time",
+        TaskMode::Exercises => "Generate exercises",
+        TaskMode::CheckUnderstanding => "Check my understanding",
+        TaskMode::Summarize => "Summarize section",
+        TaskMode::KeyDefinitions => "Extract key definitions",
+        TaskMode::ExtractTechnicalDetails => "Extract equations, algorithms, or claims",
+        TaskMode::CompareConcepts => "Compare concepts",
+        TaskMode::Flashcards => "Generate flashcards",
+        TaskMode::Custom => "Custom instruction",
+    }
+}
+
+fn task_instruction(task_mode: TaskMode, custom_instruction: Option<&str>) -> String {
+    let instruction = match task_mode {
+        TaskMode::ExplainConcept => {
+            "Explain the core concepts in this excerpt clearly. Preserve important definitions, assumptions, examples, and technical caveats."
+        }
+        TaskMode::ExplainTerm => {
+            "Identify unfamiliar or specialized terms in this excerpt and explain each one in context."
+        }
+        TaskMode::Analogy => {
+            "Explain this excerpt using one or two concrete analogies, then map each part of the analogy back to the technical details."
+        }
+        TaskMode::Diagram => {
+            "Create a concise prompt for generating a diagram or visual representation of the ideas in this excerpt. Include labels and relationships."
+        }
+        TaskMode::Quiz => {
+            "Quiz me one question at a time about this excerpt. Wait for my answer before revealing feedback or the next question."
+        }
+        TaskMode::Exercises => {
+            "Generate practice exercises from this excerpt. Include a range from basic recall to applied reasoning, and provide answers separately."
+        }
+        TaskMode::CheckUnderstanding => {
+            "Ask diagnostic questions to check my understanding of this excerpt. Focus on misconceptions and edge cases."
+        }
+        TaskMode::Summarize => {
+            "Summarize this excerpt faithfully. Preserve the structure, key claims, definitions, examples, and technical details."
+        }
+        TaskMode::KeyDefinitions => {
+            "Extract the key definitions from this excerpt. For each definition, include the term, meaning, and local context."
+        }
+        TaskMode::ExtractTechnicalDetails => {
+            "Extract equations, algorithms, claims, constraints, and implementation-relevant details from this excerpt."
+        }
+        TaskMode::CompareConcepts => {
+            "Identify concepts that are compared or contrasted in this excerpt. Explain similarities, differences, and trade-offs."
+        }
+        TaskMode::Flashcards => {
+            "Generate concise flashcards from this excerpt. Use question and answer pairs, and keep each answer grounded in the text."
+        }
+        TaskMode::Custom => custom_instruction
+            .map(str::trim)
+            .filter(|instruction| !instruction.is_empty())
+            .unwrap_or("Follow my custom study instruction for this excerpt."),
+    };
+    instruction.to_string()
 }
 
 pub fn render_nodes_as_markdown(nodes: &[ContentNode]) -> String {
@@ -1001,10 +1154,12 @@ mod tests {
         let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
         let packet = generate_chapter_markdown(&book, "ch1").expect("chapter renders");
 
-        assert!(packet.markdown.contains("# Extracted Markdown"));
+        assert!(packet.markdown.contains("# Study Packet"));
         assert!(packet.markdown.contains("Book: Fixture Systems"));
         assert!(packet.markdown.contains("Author: Ada Example"));
         assert!(packet.markdown.contains("Chapter: Chapter 1"));
+        assert!(packet.markdown.contains("Model profile: Generic LLM"));
+        assert!(packet.markdown.contains("Task: Summarize section"));
         assert!(packet.markdown.contains("- Chapter 1"));
         assert!(packet.markdown.contains("Location: chapters/ch1.xhtml"));
         assert!(packet.markdown.contains("# Chapter 1"));
@@ -1016,6 +1171,58 @@ mod tests {
         assert!(packet.markdown.contains("- Leader"));
         assert!(packet.estimated_tokens > 0);
         assert_eq!(packet.heading_ancestry, vec!["Chapter 1"]);
+    }
+
+    #[test]
+    fn generates_task_specific_study_packet() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let packet = generate_chapter_study_packet(
+            &book,
+            "ch1",
+            &PacketOptions {
+                task_mode: TaskMode::Quiz,
+                model_profile: ModelProfileId::Claude,
+                custom_instruction: None,
+            },
+        )
+        .expect("packet renders");
+
+        assert!(packet.markdown.contains("Model profile: Claude"));
+        assert!(
+            packet
+                .markdown
+                .contains("Task: Quiz me one question at a time")
+        );
+        assert!(
+            packet
+                .markdown
+                .contains("Quiz me one question at a time about this excerpt.")
+        );
+    }
+
+    #[test]
+    fn generates_custom_instruction_study_packet() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let packet = generate_chapter_study_packet(
+            &book,
+            "ch1",
+            &PacketOptions {
+                task_mode: TaskMode::Custom,
+                model_profile: ModelProfileId::ChatGpt,
+                custom_instruction: Some("Explain only the replication trade-offs.".to_string()),
+            },
+        )
+        .expect("packet renders");
+
+        assert!(packet.markdown.contains("Model profile: ChatGPT"));
+        assert!(packet.markdown.contains("Task: Custom instruction"));
+        assert!(
+            packet
+                .markdown
+                .contains("Explain only the replication trade-offs.")
+        );
     }
 
     #[test]

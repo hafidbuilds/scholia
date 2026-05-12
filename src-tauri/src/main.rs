@@ -1,8 +1,8 @@
 use scholia_core::{
     BookDocument, ContentDocument, ContentKind, ContentNode, EpubError, GeneratedMarkdown,
-    LocationSource, SpineItem, TocNode,
+    LocationSource, ModelProfileId, PacketOptions, SpineItem, TaskMode, TocNode,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use thiserror::Error;
 
@@ -12,6 +12,10 @@ enum CommandError {
     Read(#[from] std::io::Error),
     #[error("{0}")]
     Epub(#[from] EpubError),
+    #[error("unsupported task mode: {0}")]
+    UnsupportedTaskMode(String),
+    #[error("unsupported model profile: {0}")]
+    UnsupportedModelProfile(String),
 }
 
 impl Serialize for CommandError {
@@ -91,6 +95,16 @@ struct GeneratedMarkdownDto {
     location: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GenerateStudyPacketRequestDto {
+    path: String,
+    spine_item_id: String,
+    task_mode: String,
+    model_profile: String,
+    custom_instruction: Option<String>,
+}
+
 #[tauri::command]
 fn open_book(path: String) -> Result<BookSummaryDto, CommandError> {
     let bytes = fs::read(path)?;
@@ -99,22 +113,27 @@ fn open_book(path: String) -> Result<BookSummaryDto, CommandError> {
 }
 
 #[tauri::command]
-fn generate_chapter_markdown(
-    path: String,
-    spine_item_id: String,
+fn generate_study_packet(
+    request: GenerateStudyPacketRequestDto,
 ) -> Result<GeneratedMarkdownDto, CommandError> {
-    let bytes = fs::read(path)?;
+    let bytes = fs::read(request.path)?;
     let book = scholia_core::open_epub_bytes(&bytes)?;
-    let packet = scholia_core::generate_chapter_markdown(&book, &spine_item_id)?;
+    let options = PacketOptions {
+        task_mode: parse_task_mode(&request.task_mode)?,
+        model_profile: parse_model_profile(&request.model_profile)?,
+        custom_instruction: request.custom_instruction,
+    };
+    let packet = scholia_core::generate_chapter_study_packet(
+        &book,
+        &request.spine_item_id,
+        &options,
+    )?;
     Ok(packet.into())
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            open_book,
-            generate_chapter_markdown
-        ])
+        .invoke_handler(tauri::generate_handler![open_book, generate_study_packet])
         .run(tauri::generate_context!())
         .expect("error while running Scholia");
 }
@@ -214,5 +233,33 @@ fn content_kind_name(kind: ContentKind) -> &'static str {
         ContentKind::Footnote => "footnote",
         ContentKind::Reference => "reference",
         ContentKind::ThematicBreak => "thematicBreak",
+    }
+}
+
+fn parse_task_mode(value: &str) -> Result<TaskMode, CommandError> {
+    match value {
+        "explain" => Ok(TaskMode::ExplainConcept),
+        "term" => Ok(TaskMode::ExplainTerm),
+        "analogy" => Ok(TaskMode::Analogy),
+        "diagram" => Ok(TaskMode::Diagram),
+        "quiz" => Ok(TaskMode::Quiz),
+        "exercises" => Ok(TaskMode::Exercises),
+        "check" => Ok(TaskMode::CheckUnderstanding),
+        "summarize" => Ok(TaskMode::Summarize),
+        "definitions" => Ok(TaskMode::KeyDefinitions),
+        "technical" => Ok(TaskMode::ExtractTechnicalDetails),
+        "compare" => Ok(TaskMode::CompareConcepts),
+        "flashcards" => Ok(TaskMode::Flashcards),
+        "custom" => Ok(TaskMode::Custom),
+        other => Err(CommandError::UnsupportedTaskMode(other.to_string())),
+    }
+}
+
+fn parse_model_profile(value: &str) -> Result<ModelProfileId, CommandError> {
+    match value {
+        "generic" => Ok(ModelProfileId::Generic),
+        "chatgpt" => Ok(ModelProfileId::ChatGpt),
+        "claude" => Ok(ModelProfileId::Claude),
+        other => Err(CommandError::UnsupportedModelProfile(other.to_string())),
     }
 }

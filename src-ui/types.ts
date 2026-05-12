@@ -60,3 +60,26 @@ export type GeneratedMarkdown = {
   headingAncestry: string[];
   location: string;
 };
+
+export type TaskMode =
+  | "explain"
+  | "term"
+  | "analogy"
+  | "diagram"
+  | "quiz"
+  | "exercises"
+  | "check"
+  | "summarize"
+  | "definitions"
+  | "technical"
+  | "compare"
+  | "flashcards"
+  | "custom";
+
+export type ModelProfile = "generic" | "chatgpt" | "claude";
+
+export type StudyPacketOptions = {
+  taskMode: TaskMode;
+  modelProfile: ModelProfile;
+  customInstruction?: string;
+};

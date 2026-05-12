@@ -1,14 +1,38 @@
 import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { generateChapterMarkdown, openBook } from "./api";
+import { generateStudyPacket, openBook } from "./api";
 import type {
   BookSummary,
   ContentNode,
   GeneratedMarkdown,
+  ModelProfile,
   SpineItem,
+  TaskMode,
   TocNode,
 } from "./types";
+
+const taskOptions: Array<{ value: TaskMode; label: string }> = [
+  { value: "explain", label: "Explain concept" },
+  { value: "term", label: "Explain term" },
+  { value: "analogy", label: "Analogy" },
+  { value: "diagram", label: "Diagram prompt" },
+  { value: "quiz", label: "Quiz me" },
+  { value: "exercises", label: "Exercises" },
+  { value: "check", label: "Check understanding" },
+  { value: "summarize", label: "Summarize" },
+  { value: "definitions", label: "Definitions" },
+  { value: "technical", label: "Technical details" },
+  { value: "compare", label: "Compare concepts" },
+  { value: "flashcards", label: "Flashcards" },
+  { value: "custom", label: "Custom" },
+];
+
+const modelProfiles: Array<{ value: ModelProfile; label: string }> = [
+  { value: "generic", label: "Generic LLM" },
+  { value: "chatgpt", label: "ChatGPT" },
+  { value: "claude", label: "Claude" },
+];
 
 function App() {
   const [path, setPath] = useState("");
@@ -23,6 +47,9 @@ function App() {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
   );
+  const [taskMode, setTaskMode] = useState<TaskMode>("summarize");
+  const [modelProfile, setModelProfile] = useState<ModelProfile>("generic");
+  const [customInstruction, setCustomInstruction] = useState("");
 
   const activeSpine = useMemo(() => {
     if (!book) return null;
@@ -66,10 +93,14 @@ function App() {
     if (!activeSpine || !path.trim()) return;
 
     setMarkdownLoading(true);
-    setError(null);
-    setCopyState("idle");
+      setError(null);
+      setCopyState("idle");
     try {
-      const packet = await generateChapterMarkdown(path.trim(), activeSpine.id);
+      const packet = await generateStudyPacket(path.trim(), activeSpine.id, {
+        taskMode,
+        modelProfile,
+        customInstruction,
+      });
       setMarkdownPacket(packet);
     } catch (err) {
       setMarkdownPacket(null);
@@ -139,6 +170,26 @@ function App() {
             spine={activeSpine}
             loading={markdownLoading}
             copyState={copyState}
+            taskMode={taskMode}
+            modelProfile={modelProfile}
+            customInstruction={customInstruction}
+            onTaskModeChange={(value) => {
+              setTaskMode(value);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+            }}
+            onModelProfileChange={(value) => {
+              setModelProfile(value);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+            }}
+            onCustomInstructionChange={(value) => {
+              setCustomInstruction(value);
+              if (taskMode === "custom") {
+                setMarkdownPacket(null);
+                setCopyState("idle");
+              }
+            }}
             onGenerate={handleGenerateMarkdown}
             onCopy={handleCopyMarkdown}
           />
@@ -161,6 +212,12 @@ function MarkdownPanel({
   spine,
   loading,
   copyState,
+  taskMode,
+  modelProfile,
+  customInstruction,
+  onTaskModeChange,
+  onModelProfileChange,
+  onCustomInstructionChange,
   onGenerate,
   onCopy,
 }: {
@@ -168,6 +225,12 @@ function MarkdownPanel({
   spine: SpineItem | null;
   loading: boolean;
   copyState: "idle" | "copied" | "failed";
+  taskMode: TaskMode;
+  modelProfile: ModelProfile;
+  customInstruction: string;
+  onTaskModeChange: (taskMode: TaskMode) => void;
+  onModelProfileChange: (profile: ModelProfile) => void;
+  onCustomInstructionChange: (instruction: string) => void;
   onGenerate: () => void;
   onCopy: () => void;
 }) {
@@ -175,13 +238,60 @@ function MarkdownPanel({
     <aside className="packet-panel">
       <header className="packet-header">
         <div>
-          <h2>Markdown</h2>
+          <h2>Study Packet</h2>
           <p>{spine?.title || spine?.href || "No chapter selected"}</p>
         </div>
         <button disabled={!spine || loading} onClick={onGenerate} type="button">
           {loading ? "Generating" : "Generate"}
         </button>
       </header>
+
+      <div className="packet-controls">
+        <label>
+          <span>Task</span>
+          <select
+            value={taskMode}
+            onChange={(event) =>
+              onTaskModeChange(event.target.value as TaskMode)
+            }
+          >
+            {taskOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span>Model</span>
+          <select
+            value={modelProfile}
+            onChange={(event) =>
+              onModelProfileChange(event.target.value as ModelProfile)
+            }
+          >
+            {modelProfiles.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {taskMode === "custom" ? (
+          <label>
+            <span>Instruction</span>
+            <textarea
+              value={customInstruction}
+              onChange={(event) =>
+                onCustomInstructionChange(event.target.value)
+              }
+              placeholder="Ask the model to tutor, quiz, explain, compare, or transform this excerpt."
+            />
+          </label>
+        ) : null}
+      </div>
 
       {packet ? (
         <>
@@ -211,7 +321,7 @@ function MarkdownPanel({
         </>
       ) : (
         <div className="packet-empty">
-          <p>Generate clean Markdown for the selected chapter.</p>
+          <p>Generate a task-specific study packet for the selected chapter.</p>
         </div>
       )}
     </aside>
