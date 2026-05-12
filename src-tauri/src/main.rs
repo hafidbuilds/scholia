@@ -1,6 +1,6 @@
 use scholia_core::{
-    BookDocument, ContentDocument, ContentKind, ContentNode, EpubError, LocationSource, SpineItem,
-    TocNode,
+    BookDocument, ContentDocument, ContentKind, ContentNode, EpubError, GeneratedMarkdown,
+    LocationSource, SpineItem, TocNode,
 };
 use serde::Serialize;
 use std::fs;
@@ -82,6 +82,15 @@ struct LocationSourceDto {
     dom_path: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedMarkdownDto {
+    markdown: String,
+    estimated_tokens: usize,
+    heading_ancestry: Vec<String>,
+    location: String,
+}
+
 #[tauri::command]
 fn open_book(path: String) -> Result<BookSummaryDto, CommandError> {
     let bytes = fs::read(path)?;
@@ -89,9 +98,23 @@ fn open_book(path: String) -> Result<BookSummaryDto, CommandError> {
     Ok(book.into())
 }
 
+#[tauri::command]
+fn generate_chapter_markdown(
+    path: String,
+    spine_item_id: String,
+) -> Result<GeneratedMarkdownDto, CommandError> {
+    let bytes = fs::read(path)?;
+    let book = scholia_core::open_epub_bytes(&bytes)?;
+    let packet = scholia_core::generate_chapter_markdown(&book, &spine_item_id)?;
+    Ok(packet.into())
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![open_book])
+        .invoke_handler(tauri::generate_handler![
+            open_book,
+            generate_chapter_markdown
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Scholia");
 }
@@ -163,6 +186,17 @@ impl From<LocationSource> for LocationSourceDto {
             href: source.href,
             anchor: source.anchor,
             dom_path: source.dom_path,
+        }
+    }
+}
+
+impl From<GeneratedMarkdown> for GeneratedMarkdownDto {
+    fn from(packet: GeneratedMarkdown) -> Self {
+        Self {
+            markdown: packet.markdown,
+            estimated_tokens: packet.estimated_tokens,
+            heading_ancestry: packet.heading_ancestry,
+            location: packet.location,
         }
     }
 }

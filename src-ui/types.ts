@@ -53,3 +53,10 @@ export type ContentNode = {
     domPath?: string | null;
   };
 };
+
+export type GeneratedMarkdown = {
+  markdown: string;
+  estimatedTokens: number;
+  headingAncestry: string[];
+  location: string;
+};

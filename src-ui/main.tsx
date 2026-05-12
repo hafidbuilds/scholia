@@ -1,8 +1,14 @@
 import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { openBook } from "./api";
-import type { BookSummary, ContentNode, SpineItem, TocNode } from "./types";
+import { generateChapterMarkdown, openBook } from "./api";
+import type {
+  BookSummary,
+  ContentNode,
+  GeneratedMarkdown,
+  SpineItem,
+  TocNode,
+} from "./types";
 
 function App() {
   const [path, setPath] = useState("");
@@ -10,6 +16,13 @@ function App() {
   const [activeSpineId, setActiveSpineId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [markdownPacket, setMarkdownPacket] = useState<GeneratedMarkdown | null>(
+    null,
+  );
+  const [markdownLoading, setMarkdownLoading] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
 
   const activeSpine = useMemo(() => {
     if (!book) return null;
@@ -31,12 +44,49 @@ function App() {
       const opened = await openBook(path.trim());
       setBook(opened);
       setActiveSpineId(opened.spine[0]?.id ?? null);
+      setMarkdownPacket(null);
+      setCopyState("idle");
     } catch (err) {
       setBook(null);
       setActiveSpineId(null);
+      setMarkdownPacket(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSelectSpine(spineId: string) {
+    setActiveSpineId(spineId);
+    setMarkdownPacket(null);
+    setCopyState("idle");
+  }
+
+  async function handleGenerateMarkdown() {
+    if (!activeSpine || !path.trim()) return;
+
+    setMarkdownLoading(true);
+    setError(null);
+    setCopyState("idle");
+    try {
+      const packet = await generateChapterMarkdown(path.trim(), activeSpine.id);
+      setMarkdownPacket(packet);
+    } catch (err) {
+      setMarkdownPacket(null);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMarkdownLoading(false);
+    }
+  }
+
+  async function handleCopyMarkdown() {
+    if (!markdownPacket) return;
+
+    try {
+      await navigator.clipboard.writeText(markdownPacket.markdown);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
     }
   }
 
@@ -72,18 +122,26 @@ function App() {
                 nodes={book.toc}
                 spine={book.spine}
                 activeSpineId={activeSpine?.id ?? null}
-                onSelect={setActiveSpineId}
+                onSelect={handleSelectSpine}
               />
             ) : (
               <SpineList
                 spine={book.spine}
                 activeSpineId={activeSpine?.id ?? null}
-                onSelect={setActiveSpineId}
+                onSelect={handleSelectSpine}
               />
             )}
           </aside>
 
           <Reader spine={activeSpine} />
+          <MarkdownPanel
+            packet={markdownPacket}
+            spine={activeSpine}
+            loading={markdownLoading}
+            copyState={copyState}
+            onGenerate={handleGenerateMarkdown}
+            onCopy={handleCopyMarkdown}
+          />
         </section>
       ) : (
         <section className="empty-state">
@@ -95,6 +153,68 @@ function App() {
         </section>
       )}
     </main>
+  );
+}
+
+function MarkdownPanel({
+  packet,
+  spine,
+  loading,
+  copyState,
+  onGenerate,
+  onCopy,
+}: {
+  packet: GeneratedMarkdown | null;
+  spine: SpineItem | null;
+  loading: boolean;
+  copyState: "idle" | "copied" | "failed";
+  onGenerate: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <aside className="packet-panel">
+      <header className="packet-header">
+        <div>
+          <h2>Markdown</h2>
+          <p>{spine?.title || spine?.href || "No chapter selected"}</p>
+        </div>
+        <button disabled={!spine || loading} onClick={onGenerate} type="button">
+          {loading ? "Generating" : "Generate"}
+        </button>
+      </header>
+
+      {packet ? (
+        <>
+          <dl className="packet-meta">
+            <div>
+              <dt>Tokens</dt>
+              <dd>{packet.estimatedTokens}</dd>
+            </div>
+            <div>
+              <dt>Location</dt>
+              <dd>{packet.location}</dd>
+            </div>
+          </dl>
+          <textarea
+            readOnly
+            className="packet-preview"
+            value={packet.markdown}
+            aria-label="Generated Markdown preview"
+          />
+          <div className="packet-actions">
+            <button onClick={onCopy} type="button">
+              Copy
+            </button>
+            {copyState === "copied" ? <span>Copied</span> : null}
+            {copyState === "failed" ? <span>Copy failed</span> : null}
+          </div>
+        </>
+      ) : (
+        <div className="packet-empty">
+          <p>Generate clean Markdown for the selected chapter.</p>
+        </div>
+      )}
+    </aside>
   );
 }
 

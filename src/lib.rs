@@ -21,6 +21,8 @@ pub enum EpubError {
     MissingOpf(String),
     #[error("required manifest item is missing: {0}")]
     MissingManifestItem(String),
+    #[error("spine item is missing: {0}")]
+    MissingSpineItem(String),
     #[error("XML parse error in {path}: {source}")]
     Xml {
         path: String,
@@ -105,6 +107,14 @@ pub struct Asset {
     pub media_type: String,
     pub properties: Vec<String>,
     pub absolute_path_in_archive: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedMarkdown {
+    pub markdown: String,
+    pub estimated_tokens: usize,
+    pub heading_ancestry: Vec<String>,
+    pub location: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +204,143 @@ pub fn open_epub_bytes(bytes: &[u8]) -> Result<BookDocument, EpubError> {
         toc,
         manifest: package.manifest,
     })
+}
+
+pub fn generate_chapter_markdown(
+    book: &BookDocument,
+    spine_item_id: &str,
+) -> Result<GeneratedMarkdown, EpubError> {
+    let spine_item = book
+        .spine
+        .iter()
+        .find(|item| item.id == spine_item_id)
+        .ok_or_else(|| EpubError::MissingSpineItem(spine_item_id.to_string()))?;
+    let excerpt = render_nodes_as_markdown(&spine_item.content.nodes);
+    let chapter = spine_item
+        .title
+        .as_deref()
+        .or_else(|| first_heading_text(&spine_item.content.nodes))
+        .unwrap_or(&spine_item.href);
+    let heading_ancestry = heading_ancestry(&spine_item.content.nodes);
+    let estimated_tokens = estimate_tokens(&excerpt);
+
+    let mut markdown = String::new();
+    markdown.push_str("# Extracted Markdown\n\n");
+    markdown.push_str("## Metadata\n\n");
+    markdown.push_str(&format!("Book: {}\n", book.title));
+    markdown.push_str(&format!("Author: {}\n", book.authors.join(", ")));
+    markdown.push_str(&format!("Chapter: {chapter}\n"));
+    markdown.push_str("Section path:\n");
+    if heading_ancestry.is_empty() {
+        markdown.push_str("- <none detected>\n");
+    } else {
+        for heading in &heading_ancestry {
+            markdown.push_str(&format!("- {heading}\n"));
+        }
+    }
+    markdown.push_str(&format!("Location: {}\n", spine_item.href));
+    markdown.push_str(&format!("Estimated tokens: {estimated_tokens}\n\n"));
+    markdown.push_str("## Excerpt\n\n");
+    markdown.push_str("```markdown\n");
+    markdown.push_str(excerpt.trim());
+    markdown.push_str("\n```\n");
+
+    Ok(GeneratedMarkdown {
+        markdown,
+        estimated_tokens,
+        heading_ancestry,
+        location: spine_item.href.clone(),
+    })
+}
+
+pub fn render_nodes_as_markdown(nodes: &[ContentNode]) -> String {
+    let mut markdown = String::new();
+    for node in nodes {
+        render_node_as_markdown(node, &mut markdown);
+        if !markdown.ends_with("\n\n") {
+            markdown.push('\n');
+        }
+    }
+    markdown.trim_end().to_string()
+}
+
+fn render_node_as_markdown(node: &ContentNode, output: &mut String) {
+    match node.kind {
+        ContentKind::Heading => {
+            let level = node.level.unwrap_or(2).clamp(1, 6);
+            output.push_str(&"#".repeat(level as usize));
+            output.push(' ');
+            output.push_str(node.text.as_deref().unwrap_or(""));
+            output.push_str("\n\n");
+        }
+        ContentKind::Paragraph => {
+            output.push_str(node.text.as_deref().unwrap_or(""));
+            output.push_str("\n\n");
+        }
+        ContentKind::Blockquote => {
+            for line in node.text.as_deref().unwrap_or("").lines() {
+                output.push_str("> ");
+                output.push_str(line);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+        ContentKind::Code => {
+            output.push_str("```\n");
+            output.push_str(node.text.as_deref().unwrap_or(""));
+            output.push_str("\n```\n\n");
+        }
+        ContentKind::List => {
+            for child in &node.children {
+                output.push_str("- ");
+                output.push_str(child.text.as_deref().unwrap_or(""));
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+        ContentKind::Image => {
+            output.push_str("[Image omitted");
+            if let Some(src) = node.attrs.get("src") {
+                output.push_str(": ");
+                output.push_str(src);
+            }
+            output.push_str("]\n");
+            if let Some(alt) = node.text.as_deref() {
+                output.push_str("Alt text: ");
+                output.push_str(alt);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+        ContentKind::ThematicBreak => {
+            output.push_str("---\n\n");
+        }
+        ContentKind::Table | ContentKind::Math | ContentKind::Footnote | ContentKind::Reference => {
+            if let Some(text) = node.text.as_deref() {
+                output.push_str(text);
+                output.push_str("\n\n");
+            }
+        }
+    }
+}
+
+fn heading_ancestry(nodes: &[ContentNode]) -> Vec<String> {
+    nodes
+        .iter()
+        .filter(|node| node.kind == ContentKind::Heading)
+        .filter_map(|node| node.text.clone())
+        .collect()
+}
+
+fn first_heading_text(nodes: &[ContentNode]) -> Option<&str> {
+    nodes
+        .iter()
+        .find(|node| node.kind == ContentKind::Heading)
+        .and_then(|node| node.text.as_deref())
+}
+
+fn estimate_tokens(markdown: &str) -> usize {
+    markdown.chars().count().div_ceil(4)
 }
 
 fn parse_container_rootfile(xml: &str) -> Result<String, EpubError> {
@@ -846,6 +993,29 @@ mod tests {
                 .iter()
                 .any(|node| node.kind == ContentKind::List)
         );
+    }
+
+    #[test]
+    fn generates_chapter_markdown_with_metadata_and_excerpt() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let packet = generate_chapter_markdown(&book, "ch1").expect("chapter renders");
+
+        assert!(packet.markdown.contains("# Extracted Markdown"));
+        assert!(packet.markdown.contains("Book: Fixture Systems"));
+        assert!(packet.markdown.contains("Author: Ada Example"));
+        assert!(packet.markdown.contains("Chapter: Chapter 1"));
+        assert!(packet.markdown.contains("- Chapter 1"));
+        assert!(packet.markdown.contains("Location: chapters/ch1.xhtml"));
+        assert!(packet.markdown.contains("# Chapter 1"));
+        assert!(
+            packet
+                .markdown
+                .contains("Replication keeps copies of data.")
+        );
+        assert!(packet.markdown.contains("- Leader"));
+        assert!(packet.estimated_tokens > 0);
+        assert_eq!(packet.heading_ancestry, vec!["Chapter 1"]);
     }
 
     #[test]

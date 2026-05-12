@@ -89,7 +89,7 @@ input {
 
 .workspace {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr) 360px;
   min-height: calc(100vh - 74px);
 }
 
@@ -147,6 +147,108 @@ input {
 .reader {
   overflow: auto;
   padding: 0;
+}
+
+.packet-panel {
+  background: #ffffff;
+  border-left: 1px solid #d9d9d2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  padding: 18px;
+}
+
+.packet-header {
+  align-items: flex-start;
+  border-bottom: 1px solid #e2e2dc;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding-bottom: 14px;
+}
+
+.packet-header h2,
+.packet-header p {
+  margin: 0;
+}
+
+.packet-header h2 {
+  font-size: 15px;
+}
+
+.packet-header p {
+  color: #62645e;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.packet-header button,
+.packet-actions button {
+  background: #2f5d50;
+  border: 1px solid #2f5d50;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 8px 11px;
+}
+
+.packet-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.packet-meta {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+  margin: 16px 0;
+}
+
+.packet-meta div {
+  min-width: 0;
+}
+
+.packet-meta dt {
+  color: #787a72;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.packet-meta dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.packet-preview {
+  border: 1px solid #d0d1ca;
+  border-radius: 6px;
+  flex: 1;
+  min-height: 320px;
+  padding: 12px;
+  resize: none;
+  width: 100%;
+}
+
+.packet-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.packet-actions span {
+  color: #4d625b;
+  font-size: 13px;
+}
+
+.packet-empty {
+  align-items: center;
+  color: #62645e;
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  text-align: center;
 }
 
 .reader-header {
@@ -254,5 +356,11 @@ input {
   .reader-content {
     margin: 0;
     padding: 22px;
+  }
+
+  .packet-panel {
+    border-left: 0;
+    border-top: 1px solid #d9d9d2;
+    min-height: 420px;
   }
 }
