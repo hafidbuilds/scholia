@@ -4,8 +4,11 @@ import "./styles.css";
 import { generateStudyPacket, openBook } from "./api";
 import type {
   BookSummary,
+  BudgetPreset,
+  ChunkingMode,
   ContentNode,
   GeneratedMarkdown,
+  GeneratedMarkdownChunk,
   ModelProfile,
   SpineItem,
   TaskMode,
@@ -34,6 +37,20 @@ const modelProfiles: Array<{ value: ModelProfile; label: string }> = [
   { value: "claude", label: "Claude" },
 ];
 
+const budgetOptions: Array<{ value: BudgetPreset; label: string }> = [
+  { value: "small", label: "Small (~4k)" },
+  { value: "medium", label: "Medium (~12k)" },
+  { value: "large", label: "Large (~32k)" },
+  { value: "xl", label: "XL (~100k)" },
+  { value: "custom", label: "Custom" },
+];
+
+const chunkingOptions: Array<{ value: ChunkingMode; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "none", label: "None" },
+  { value: "force", label: "Force" },
+];
+
 function App() {
   const [path, setPath] = useState("");
   const [book, setBook] = useState<BookSummary | null>(null);
@@ -49,7 +66,11 @@ function App() {
   );
   const [taskMode, setTaskMode] = useState<TaskMode>("summarize");
   const [modelProfile, setModelProfile] = useState<ModelProfile>("generic");
+  const [budgetPreset, setBudgetPreset] = useState<BudgetPreset>("medium");
+  const [customBudgetTokens, setCustomBudgetTokens] = useState(12000);
+  const [chunking, setChunking] = useState<ChunkingMode>("auto");
   const [customInstruction, setCustomInstruction] = useState("");
+  const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
 
   const activeSpine = useMemo(() => {
     if (!book) return null;
@@ -73,10 +94,12 @@ function App() {
       setActiveSpineId(opened.spine[0]?.id ?? null);
       setMarkdownPacket(null);
       setCopyState("idle");
+      setSelectedChunkIndex(0);
     } catch (err) {
       setBook(null);
       setActiveSpineId(null);
       setMarkdownPacket(null);
+      setSelectedChunkIndex(0);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -87,21 +110,27 @@ function App() {
     setActiveSpineId(spineId);
     setMarkdownPacket(null);
     setCopyState("idle");
+    setSelectedChunkIndex(0);
   }
 
   async function handleGenerateMarkdown() {
     if (!activeSpine || !path.trim()) return;
 
     setMarkdownLoading(true);
-      setError(null);
-      setCopyState("idle");
+    setError(null);
+    setCopyState("idle");
     try {
       const packet = await generateStudyPacket(path.trim(), activeSpine.id, {
         taskMode,
         modelProfile,
+        budgetPreset,
+        customBudgetTokens:
+          budgetPreset === "custom" ? customBudgetTokens : undefined,
+        chunking,
         customInstruction,
       });
       setMarkdownPacket(packet);
+      setSelectedChunkIndex(0);
     } catch (err) {
       setMarkdownPacket(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -111,6 +140,20 @@ function App() {
   }
 
   async function handleCopyMarkdown() {
+    if (!markdownPacket) return;
+
+    const activeChunk = markdownPacket.chunks[selectedChunkIndex];
+    const markdown = activeChunk?.markdown ?? markdownPacket.markdown;
+
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  async function handleCopyAllMarkdown() {
     if (!markdownPacket) return;
 
     try {
@@ -172,26 +215,55 @@ function App() {
             copyState={copyState}
             taskMode={taskMode}
             modelProfile={modelProfile}
+            budgetPreset={budgetPreset}
+            customBudgetTokens={customBudgetTokens}
+            chunking={chunking}
             customInstruction={customInstruction}
+            selectedChunkIndex={selectedChunkIndex}
             onTaskModeChange={(value) => {
               setTaskMode(value);
               setMarkdownPacket(null);
               setCopyState("idle");
+              setSelectedChunkIndex(0);
             }}
             onModelProfileChange={(value) => {
               setModelProfile(value);
               setMarkdownPacket(null);
               setCopyState("idle");
+              setSelectedChunkIndex(0);
+            }}
+            onBudgetPresetChange={(value) => {
+              setBudgetPreset(value);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+              setSelectedChunkIndex(0);
+            }}
+            onCustomBudgetTokensChange={(value) => {
+              setCustomBudgetTokens(value);
+              if (budgetPreset === "custom") {
+                setMarkdownPacket(null);
+                setCopyState("idle");
+                setSelectedChunkIndex(0);
+              }
+            }}
+            onChunkingChange={(value) => {
+              setChunking(value);
+              setMarkdownPacket(null);
+              setCopyState("idle");
+              setSelectedChunkIndex(0);
             }}
             onCustomInstructionChange={(value) => {
               setCustomInstruction(value);
               if (taskMode === "custom") {
                 setMarkdownPacket(null);
                 setCopyState("idle");
+                setSelectedChunkIndex(0);
               }
             }}
+            onSelectedChunkIndexChange={setSelectedChunkIndex}
             onGenerate={handleGenerateMarkdown}
             onCopy={handleCopyMarkdown}
+            onCopyAll={handleCopyAllMarkdown}
           />
         </section>
       ) : (
@@ -214,12 +286,21 @@ function MarkdownPanel({
   copyState,
   taskMode,
   modelProfile,
+  budgetPreset,
+  customBudgetTokens,
+  chunking,
   customInstruction,
+  selectedChunkIndex,
   onTaskModeChange,
   onModelProfileChange,
+  onBudgetPresetChange,
+  onCustomBudgetTokensChange,
+  onChunkingChange,
   onCustomInstructionChange,
+  onSelectedChunkIndexChange,
   onGenerate,
   onCopy,
+  onCopyAll,
 }: {
   packet: GeneratedMarkdown | null;
   spine: SpineItem | null;
@@ -227,13 +308,25 @@ function MarkdownPanel({
   copyState: "idle" | "copied" | "failed";
   taskMode: TaskMode;
   modelProfile: ModelProfile;
+  budgetPreset: BudgetPreset;
+  customBudgetTokens: number;
+  chunking: ChunkingMode;
   customInstruction: string;
+  selectedChunkIndex: number;
   onTaskModeChange: (taskMode: TaskMode) => void;
   onModelProfileChange: (profile: ModelProfile) => void;
+  onBudgetPresetChange: (budget: BudgetPreset) => void;
+  onCustomBudgetTokensChange: (tokens: number) => void;
+  onChunkingChange: (chunking: ChunkingMode) => void;
   onCustomInstructionChange: (instruction: string) => void;
+  onSelectedChunkIndexChange: (index: number) => void;
   onGenerate: () => void;
   onCopy: () => void;
+  onCopyAll: () => void;
 }) {
+  const selectedChunk = packet?.chunks[selectedChunkIndex] ?? packet?.chunks[0];
+  const previewMarkdown = selectedChunk?.markdown ?? packet?.markdown ?? "";
+
   return (
     <aside className="packet-panel">
       <header className="packet-header">
@@ -279,6 +372,52 @@ function MarkdownPanel({
           </select>
         </label>
 
+        <label>
+          <span>Budget</span>
+          <select
+            value={budgetPreset}
+            onChange={(event) =>
+              onBudgetPresetChange(event.target.value as BudgetPreset)
+            }
+          >
+            {budgetOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {budgetPreset === "custom" ? (
+          <label>
+            <span>Custom budget</span>
+            <input
+              min={1}
+              type="number"
+              value={customBudgetTokens}
+              onChange={(event) =>
+                onCustomBudgetTokensChange(Number(event.target.value))
+              }
+            />
+          </label>
+        ) : null}
+
+        <label>
+          <span>Chunking</span>
+          <select
+            value={chunking}
+            onChange={(event) =>
+              onChunkingChange(event.target.value as ChunkingMode)
+            }
+          >
+            {chunkingOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
         {taskMode === "custom" ? (
           <label>
             <span>Instruction</span>
@@ -301,20 +440,36 @@ function MarkdownPanel({
               <dd>{packet.estimatedTokens}</dd>
             </div>
             <div>
+              <dt>Chunks</dt>
+              <dd>{packet.chunks.length}</dd>
+            </div>
+            <div>
               <dt>Location</dt>
               <dd>{packet.location}</dd>
             </div>
           </dl>
+          {packet.chunks.length > 1 ? (
+            <ChunkSelector
+              chunks={packet.chunks}
+              selectedChunkIndex={selectedChunkIndex}
+              onSelect={onSelectedChunkIndexChange}
+            />
+          ) : null}
           <textarea
             readOnly
             className="packet-preview"
-            value={packet.markdown}
+            value={previewMarkdown}
             aria-label="Generated Markdown preview"
           />
           <div className="packet-actions">
             <button onClick={onCopy} type="button">
-              Copy
+              Copy Chunk
             </button>
+            {packet.chunks.length > 1 ? (
+              <button onClick={onCopyAll} type="button">
+                Copy All
+              </button>
+            ) : null}
             {copyState === "copied" ? <span>Copied</span> : null}
             {copyState === "failed" ? <span>Copy failed</span> : null}
           </div>
@@ -325,6 +480,31 @@ function MarkdownPanel({
         </div>
       )}
     </aside>
+  );
+}
+
+function ChunkSelector({
+  chunks,
+  selectedChunkIndex,
+  onSelect,
+}: {
+  chunks: GeneratedMarkdownChunk[];
+  selectedChunkIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  return (
+    <div className="chunk-selector" role="tablist" aria-label="Packet chunks">
+      {chunks.map((chunk, index) => (
+        <button
+          key={`${chunk.chunkNumber}-${chunk.startNodeId ?? index}`}
+          className={index === selectedChunkIndex ? "active" : ""}
+          onClick={() => onSelect(index)}
+          type="button"
+        >
+          {chunk.chunkNumber}/{chunk.totalChunks}
+        </button>
+      ))}
+    </div>
   );
 }
 

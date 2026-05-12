@@ -16,6 +16,9 @@ export async function generateStudyPacket(
       spineItemId,
       taskMode: options.taskMode,
       modelProfile: options.modelProfile,
+      budgetPreset: options.budgetPreset,
+      customBudgetTokens: options.customBudgetTokens,
+      chunking: options.chunking,
       customInstruction: options.customInstruction,
     },
   });

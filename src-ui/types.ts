@@ -59,6 +59,16 @@ export type GeneratedMarkdown = {
   estimatedTokens: number;
   headingAncestry: string[];
   location: string;
+  chunks: GeneratedMarkdownChunk[];
+};
+
+export type GeneratedMarkdownChunk = {
+  markdown: string;
+  estimatedTokens: number;
+  chunkNumber: number;
+  totalChunks: number;
+  startNodeId?: string | null;
+  endNodeId?: string | null;
 };
 
 export type TaskMode =
@@ -78,8 +88,15 @@ export type TaskMode =
 
 export type ModelProfile = "generic" | "chatgpt" | "claude";
 
+export type BudgetPreset = "small" | "medium" | "large" | "xl" | "custom";
+
+export type ChunkingMode = "none" | "auto" | "force";
+
 export type StudyPacketOptions = {
   taskMode: TaskMode;
   modelProfile: ModelProfile;
+  budgetPreset: BudgetPreset;
+  customBudgetTokens?: number;
+  chunking: ChunkingMode;
   customInstruction?: string;
 };

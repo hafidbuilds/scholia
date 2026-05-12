@@ -218,6 +218,7 @@ textarea {
   text-transform: uppercase;
 }
 
+.packet-controls input,
 .packet-controls select,
 .packet-controls textarea {
   border: 1px solid #c4c6bd;
@@ -253,6 +254,27 @@ textarea {
 .packet-meta dd {
   margin: 2px 0 0;
   overflow-wrap: anywhere;
+}
+
+.chunk-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.chunk-selector button {
+  background: transparent;
+  border: 1px solid #c4c6bd;
+  border-radius: 6px;
+  color: #202124;
+  cursor: pointer;
+  padding: 5px 8px;
+}
+
+.chunk-selector button.active {
+  background: #e9f0ed;
+  border-color: #2f5d50;
 }
 
 .packet-preview {

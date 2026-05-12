@@ -1,6 +1,7 @@
 use scholia_core::{
-    BookDocument, ContentDocument, ContentKind, ContentNode, EpubError, GeneratedMarkdown,
-    LocationSource, ModelProfileId, PacketOptions, SpineItem, TaskMode, TocNode,
+    BookDocument, BudgetPreset, ChunkingMode, ContentDocument, ContentKind, ContentNode,
+    EpubError, GeneratedMarkdown, GeneratedMarkdownChunk, LocationSource, ModelProfileId,
+    PacketOptions, SpineItem, TaskMode, TocNode,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -16,6 +17,10 @@ enum CommandError {
     UnsupportedTaskMode(String),
     #[error("unsupported model profile: {0}")]
     UnsupportedModelProfile(String),
+    #[error("unsupported budget preset: {0}")]
+    UnsupportedBudgetPreset(String),
+    #[error("unsupported chunking mode: {0}")]
+    UnsupportedChunkingMode(String),
 }
 
 impl Serialize for CommandError {
@@ -93,6 +98,18 @@ struct GeneratedMarkdownDto {
     estimated_tokens: usize,
     heading_ancestry: Vec<String>,
     location: String,
+    chunks: Vec<GeneratedMarkdownChunkDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedMarkdownChunkDto {
+    markdown: String,
+    estimated_tokens: usize,
+    chunk_number: usize,
+    total_chunks: usize,
+    start_node_id: Option<String>,
+    end_node_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,6 +119,9 @@ struct GenerateStudyPacketRequestDto {
     spine_item_id: String,
     task_mode: String,
     model_profile: String,
+    budget_preset: String,
+    custom_budget_tokens: Option<usize>,
+    chunking: String,
     custom_instruction: Option<String>,
 }
 
@@ -121,6 +141,9 @@ fn generate_study_packet(
     let options = PacketOptions {
         task_mode: parse_task_mode(&request.task_mode)?,
         model_profile: parse_model_profile(&request.model_profile)?,
+        budget_preset: parse_budget_preset(&request.budget_preset)?,
+        custom_budget_tokens: request.custom_budget_tokens,
+        chunking: parse_chunking_mode(&request.chunking)?,
         custom_instruction: request.custom_instruction,
     };
     let packet = scholia_core::generate_chapter_study_packet(
@@ -216,6 +239,20 @@ impl From<GeneratedMarkdown> for GeneratedMarkdownDto {
             estimated_tokens: packet.estimated_tokens,
             heading_ancestry: packet.heading_ancestry,
             location: packet.location,
+            chunks: packet.chunks.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<GeneratedMarkdownChunk> for GeneratedMarkdownChunkDto {
+    fn from(chunk: GeneratedMarkdownChunk) -> Self {
+        Self {
+            markdown: chunk.markdown,
+            estimated_tokens: chunk.estimated_tokens,
+            chunk_number: chunk.chunk_number,
+            total_chunks: chunk.total_chunks,
+            start_node_id: chunk.start_node_id,
+            end_node_id: chunk.end_node_id,
         }
     }
 }
@@ -261,5 +298,25 @@ fn parse_model_profile(value: &str) -> Result<ModelProfileId, CommandError> {
         "chatgpt" => Ok(ModelProfileId::ChatGpt),
         "claude" => Ok(ModelProfileId::Claude),
         other => Err(CommandError::UnsupportedModelProfile(other.to_string())),
+    }
+}
+
+fn parse_budget_preset(value: &str) -> Result<BudgetPreset, CommandError> {
+    match value {
+        "small" => Ok(BudgetPreset::Small),
+        "medium" => Ok(BudgetPreset::Medium),
+        "large" => Ok(BudgetPreset::Large),
+        "xl" => Ok(BudgetPreset::Xl),
+        "custom" => Ok(BudgetPreset::Custom),
+        other => Err(CommandError::UnsupportedBudgetPreset(other.to_string())),
+    }
+}
+
+fn parse_chunking_mode(value: &str) -> Result<ChunkingMode, CommandError> {
+    match value {
+        "none" => Ok(ChunkingMode::None),
+        "auto" => Ok(ChunkingMode::Auto),
+        "force" => Ok(ChunkingMode::Force),
+        other => Err(CommandError::UnsupportedChunkingMode(other.to_string())),
     }
 }

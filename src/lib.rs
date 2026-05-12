@@ -3,6 +3,7 @@ use quick_xml::events::{BytesStart, Event};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use zip::ZipArchive;
@@ -115,6 +116,17 @@ pub struct GeneratedMarkdown {
     pub estimated_tokens: usize,
     pub heading_ancestry: Vec<String>,
     pub location: String,
+    pub chunks: Vec<GeneratedMarkdownChunk>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedMarkdownChunk {
+    pub markdown: String,
+    pub estimated_tokens: usize,
+    pub chunk_number: usize,
+    pub total_chunks: usize,
+    pub start_node_id: Option<String>,
+    pub end_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,10 +153,29 @@ pub enum ModelProfileId {
     Claude,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetPreset {
+    Small,
+    Medium,
+    Large,
+    Xl,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkingMode {
+    None,
+    Auto,
+    Force,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PacketOptions {
     pub task_mode: TaskMode,
     pub model_profile: ModelProfileId,
+    pub budget_preset: BudgetPreset,
+    pub custom_budget_tokens: Option<usize>,
+    pub chunking: ChunkingMode,
     pub custom_instruction: Option<String>,
 }
 
@@ -256,6 +287,9 @@ pub fn generate_chapter_markdown(
         &PacketOptions {
             task_mode: TaskMode::Summarize,
             model_profile: ModelProfileId::Generic,
+            budget_preset: BudgetPreset::Medium,
+            custom_budget_tokens: None,
+            chunking: ChunkingMode::Auto,
             custom_instruction: None,
         },
     )
@@ -271,49 +305,173 @@ pub fn generate_chapter_study_packet(
         .iter()
         .find(|item| item.id == spine_item_id)
         .ok_or_else(|| EpubError::MissingSpineItem(spine_item_id.to_string()))?;
-    let excerpt = render_nodes_as_markdown(&spine_item.content.nodes);
     let chapter = spine_item
         .title
         .as_deref()
         .or_else(|| first_heading_text(&spine_item.content.nodes))
         .unwrap_or(&spine_item.href);
     let heading_ancestry = heading_ancestry(&spine_item.content.nodes);
-    let estimated_tokens = estimate_tokens(&excerpt);
     let profile = model_profile(options.model_profile);
     let instruction = task_instruction(options.task_mode, options.custom_instruction.as_deref());
+    let budget_tokens = budget_tokens(options.budget_preset, options.custom_budget_tokens)
+        .unwrap_or(profile.default_budget_tokens);
+    let chunk_ranges = chunk_nodes(&spine_item.content.nodes, budget_tokens, options.chunking);
+    let total_chunks = chunk_ranges.len().max(1);
+    let chunks: Vec<GeneratedMarkdownChunk> = chunk_ranges
+        .iter()
+        .enumerate()
+        .map(|(index, range)| {
+            let chunk_number = index + 1;
+            let chunk_excerpt = render_nodes_as_markdown(&spine_item.content.nodes[range.clone()]);
+            let chunk_tokens = estimate_tokens(&chunk_excerpt);
+            let markdown = render_packet_markdown(PacketRenderInput {
+                book,
+                chapter,
+                heading_ancestry: &heading_ancestry,
+                location: &spine_item.href,
+                profile: &profile,
+                task_mode: options.task_mode,
+                instruction: &instruction,
+                excerpt: &chunk_excerpt,
+                estimated_tokens: chunk_tokens,
+                budget_tokens,
+                chunk_number,
+                total_chunks,
+                start_node_id: spine_item.content.nodes[range.start].id.as_str(),
+                end_node_id: spine_item.content.nodes[range.end - 1].id.as_str(),
+            });
+            GeneratedMarkdownChunk {
+                markdown,
+                estimated_tokens: chunk_tokens,
+                chunk_number,
+                total_chunks,
+                start_node_id: Some(spine_item.content.nodes[range.start].id.clone()),
+                end_node_id: Some(spine_item.content.nodes[range.end - 1].id.clone()),
+            }
+        })
+        .collect();
+    let estimated_tokens = chunks.iter().map(|chunk| chunk.estimated_tokens).sum();
 
-    let mut markdown = String::new();
-    markdown.push_str("# Study Packet\n\n");
-    markdown.push_str("## Metadata\n\n");
-    markdown.push_str(&format!("Book: {}\n", book.title));
-    markdown.push_str(&format!("Author: {}\n", book.authors.join(", ")));
-    markdown.push_str(&format!("Chapter: {chapter}\n"));
-    markdown.push_str(&format!("Model profile: {}\n", profile.name));
-    markdown.push_str(&format!("Task: {}\n", task_mode_name(options.task_mode)));
-    markdown.push_str("Section path:\n");
-    if heading_ancestry.is_empty() {
-        markdown.push_str("- <none detected>\n");
-    } else {
-        for heading in &heading_ancestry {
-            markdown.push_str(&format!("- {heading}\n"));
-        }
-    }
-    markdown.push_str(&format!("Location: {}\n", spine_item.href));
-    markdown.push_str(&format!("Estimated tokens: {estimated_tokens}\n\n"));
-    markdown.push_str("## Task\n\n");
-    markdown.push_str(&instruction);
-    markdown.push_str("\n\n");
-    markdown.push_str("## Excerpt\n\n");
-    markdown.push_str("```markdown\n");
-    markdown.push_str(excerpt.trim());
-    markdown.push_str("\n```\n");
+    let markdown = chunks
+        .iter()
+        .map(|chunk| chunk.markdown.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
 
     Ok(GeneratedMarkdown {
         markdown,
         estimated_tokens,
         heading_ancestry,
         location: spine_item.href.clone(),
+        chunks,
     })
+}
+
+struct PacketRenderInput<'a> {
+    book: &'a BookDocument,
+    chapter: &'a str,
+    heading_ancestry: &'a [String],
+    location: &'a str,
+    profile: &'a ModelProfile,
+    task_mode: TaskMode,
+    instruction: &'a str,
+    excerpt: &'a str,
+    estimated_tokens: usize,
+    budget_tokens: usize,
+    chunk_number: usize,
+    total_chunks: usize,
+    start_node_id: &'a str,
+    end_node_id: &'a str,
+}
+
+fn render_packet_markdown(input: PacketRenderInput<'_>) -> String {
+    let mut markdown = String::new();
+    markdown.push_str("# Study Packet\n\n");
+    markdown.push_str("## Metadata\n\n");
+    markdown.push_str(&format!("Book: {}\n", input.book.title));
+    markdown.push_str(&format!("Author: {}\n", input.book.authors.join(", ")));
+    markdown.push_str(&format!("Chapter: {}\n", input.chapter));
+    markdown.push_str(&format!("Model profile: {}\n", input.profile.name));
+    markdown.push_str(&format!("Task: {}\n", task_mode_name(input.task_mode)));
+    markdown.push_str("Section path:\n");
+    if input.heading_ancestry.is_empty() {
+        markdown.push_str("- <none detected>\n");
+    } else {
+        for heading in input.heading_ancestry {
+            markdown.push_str(&format!("- {heading}\n"));
+        }
+    }
+    markdown.push_str(&format!("Location: {}\n", input.location));
+    markdown.push_str(&format!(
+        "Chunk: {} of {}\n",
+        input.chunk_number, input.total_chunks
+    ));
+    markdown.push_str(&format!(
+        "Chunk boundary: {} to {}\n",
+        input.start_node_id, input.end_node_id
+    ));
+    markdown.push_str(&format!("Budget: ~{} tokens\n", input.budget_tokens));
+    markdown.push_str(&format!("Estimated tokens: {}\n\n", input.estimated_tokens));
+    markdown.push_str("## Task\n\n");
+    if input.total_chunks > 1 {
+        markdown.push_str(&format!(
+            "We are studying this book incrementally. Treat this as part {} of {}. Do not assume access to omitted chunks unless I provide them.\n\n",
+            input.chunk_number, input.total_chunks
+        ));
+    }
+    markdown.push_str(input.instruction);
+    markdown.push_str("\n\n");
+    markdown.push_str("## Excerpt\n\n");
+    markdown.push_str("```markdown\n");
+    markdown.push_str(input.excerpt.trim());
+    markdown.push_str("\n```\n");
+    markdown
+}
+
+fn chunk_nodes(
+    nodes: &[ContentNode],
+    budget_tokens: usize,
+    mode: ChunkingMode,
+) -> Vec<Range<usize>> {
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let all_tokens = estimate_tokens(&render_nodes_as_markdown(nodes));
+    if mode == ChunkingMode::None || (mode == ChunkingMode::Auto && all_tokens <= budget_tokens) {
+        return vec![0..nodes.len()];
+    }
+
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    let mut current_tokens = 0usize;
+    let budget_tokens = budget_tokens.max(1);
+
+    for index in 0..nodes.len() {
+        let node_tokens = estimate_tokens(&render_nodes_as_markdown(&nodes[index..index + 1]));
+        if index > start && current_tokens + node_tokens > budget_tokens {
+            ranges.push(start..index);
+            start = index;
+            current_tokens = 0;
+        }
+        current_tokens += node_tokens;
+    }
+
+    if start < nodes.len() {
+        ranges.push(start..nodes.len());
+    }
+
+    ranges
+}
+
+pub fn budget_tokens(preset: BudgetPreset, custom_budget_tokens: Option<usize>) -> Option<usize> {
+    match preset {
+        BudgetPreset::Small => Some(4_000),
+        BudgetPreset::Medium => Some(12_000),
+        BudgetPreset::Large => Some(32_000),
+        BudgetPreset::Xl => Some(100_000),
+        BudgetPreset::Custom => custom_budget_tokens.filter(|budget| *budget > 0),
+    }
 }
 
 pub fn model_profile(id: ModelProfileId) -> ModelProfile {
@@ -1183,6 +1341,9 @@ mod tests {
             &PacketOptions {
                 task_mode: TaskMode::Quiz,
                 model_profile: ModelProfileId::Claude,
+                budget_preset: BudgetPreset::Medium,
+                custom_budget_tokens: None,
+                chunking: ChunkingMode::Auto,
                 custom_instruction: None,
             },
         )
@@ -1211,6 +1372,9 @@ mod tests {
             &PacketOptions {
                 task_mode: TaskMode::Custom,
                 model_profile: ModelProfileId::ChatGpt,
+                budget_preset: BudgetPreset::Medium,
+                custom_budget_tokens: None,
+                chunking: ChunkingMode::Auto,
                 custom_instruction: Some("Explain only the replication trade-offs.".to_string()),
             },
         )
@@ -1223,6 +1387,37 @@ mod tests {
                 .markdown
                 .contains("Explain only the replication trade-offs.")
         );
+    }
+
+    #[test]
+    fn splits_study_packet_by_semantic_blocks_when_budget_is_small() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let packet = generate_chapter_study_packet(
+            &book,
+            "ch1",
+            &PacketOptions {
+                task_mode: TaskMode::Summarize,
+                model_profile: ModelProfileId::Generic,
+                budget_preset: BudgetPreset::Custom,
+                custom_budget_tokens: Some(6),
+                chunking: ChunkingMode::Force,
+                custom_instruction: None,
+            },
+        )
+        .expect("packet renders");
+
+        assert!(packet.chunks.len() > 1);
+        assert!(packet.markdown.contains("Chunk: 1 of"));
+        assert!(
+            packet
+                .markdown
+                .contains("Do not assume access to omitted chunks unless I provide them.")
+        );
+        assert_eq!(packet.chunks[0].chunk_number, 1);
+        assert_eq!(packet.chunks[0].total_chunks, packet.chunks.len());
+        assert!(packet.chunks[0].start_node_id.is_some());
+        assert!(packet.chunks[0].end_node_id.is_some());
     }
 
     #[test]
