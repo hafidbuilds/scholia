@@ -105,12 +105,6 @@ function App() {
     }
   }
 
-  async function handleOpen(event: React.FormEvent) {
-    event.preventDefault();
-    if (!path.trim()) return;
-    await openBookPath(path.trim());
-  }
-
   async function handleChooseFile() {
     setError(null);
     const selected = await openDialog({
@@ -188,20 +182,12 @@ function App() {
           <h1>Scholia</h1>
           <p>Desktop EPUB study companion</p>
         </div>
-        <form className="open-form" onSubmit={handleOpen}>
+        <div className="open-form">
           <button disabled={loading} onClick={handleChooseFile} type="button">
-            Choose EPUB
+            {loading ? "Opening" : "Choose EPUB"}
           </button>
-          <input
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-            placeholder="No EPUB selected"
-            aria-label="EPUB file path"
-          />
-          <button disabled={loading || !path.trim()} type="submit">
-            {loading ? "Opening" : "Open EPUB"}
-          </button>
-        </form>
+          <span className="selected-path">{path || "No EPUB selected"}</span>
+        </div>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}

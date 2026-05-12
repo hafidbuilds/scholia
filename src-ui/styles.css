@@ -53,17 +53,23 @@ textarea {
 }
 
 .open-form {
+  align-items: center;
   display: flex;
   gap: 8px;
   min-width: min(680px, 60vw);
 }
 
-.open-form input {
+.selected-path {
   border: 1px solid #bdbfb6;
   border-radius: 6px;
+  color: #5f625a;
   flex: 1;
+  font-size: 13px;
   min-width: 220px;
+  overflow: hidden;
   padding: 9px 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .open-form button,
@@ -397,6 +403,10 @@ textarea {
   }
 
   .open-form {
+    min-width: 0;
+  }
+
+  .selected-path {
     min-width: 0;
   }
 
