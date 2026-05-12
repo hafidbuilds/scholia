@@ -1,0 +1,10 @@
+[package]
+name = "scholia-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+quick-xml = "0.38"
+sha2 = "0.10"
+thiserror = "2"
+zip = { version = "6", default-features = false, features = ["deflate"] }
