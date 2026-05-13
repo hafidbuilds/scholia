@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import Epub, { type Book, type Rendition } from "epubjs";
 import "./styles.css";
-import { generateStudyPacket, openBook, readEpubFile } from "./api";
+import { generateStudyPacket, openBook } from "./api";
 import type {
   BookSummary,
   BudgetPreset,
   ChunkingMode,
+  ContentNode,
   GeneratedMarkdown,
   GeneratedMarkdownChunk,
   ModelProfile,
@@ -267,6 +267,7 @@ function App() {
       setSelectedChunkIndex(0);
       setPreviewWidthPercent(50);
       setPreviewOpen(true);
+      setPacketCollapsed(true);
     } catch (err) {
       setMarkdownPacket(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -425,11 +426,7 @@ function App() {
                   : undefined
               }
             >
-              <EpubReader
-                path={path}
-                spine={activeSpine}
-                targetHref={activeTocHref ?? activeSpine?.href ?? null}
-              />
+              <Reader spine={activeSpine} />
               <div
                 aria-label="Resize viewer and packet preview"
                 className={`resizer${resizingPreview ? " dragging" : ""}`}
@@ -501,13 +498,6 @@ function App() {
               chunking={chunking}
               customInstruction={customInstruction}
               selectedChunkIndex={selectedChunkIndex}
-              selectedRange={selectedRange}
-              onRangeChange={(range) => {
-                setSelectedRange(range);
-                setMarkdownPacket(null);
-                setCopyState("idle");
-                setSelectedChunkIndex(0);
-              }}
               onTaskModeChange={(value) => {
                 setTaskMode(value);
                 setMarkdownPacket(null);
@@ -609,8 +599,6 @@ function MarkdownPanel({
   chunking,
   customInstruction,
   selectedChunkIndex,
-  selectedRange,
-  onRangeChange,
   onTaskModeChange,
   onModelProfileChange,
   onBudgetPresetChange,
@@ -634,8 +622,6 @@ function MarkdownPanel({
   chunking: ChunkingMode;
   customInstruction: string;
   selectedChunkIndex: number;
-  selectedRange: PacketRange;
-  onRangeChange: (range: PacketRange) => void;
   onTaskModeChange: (taskMode: TaskMode) => void;
   onModelProfileChange: (profile: ModelProfile) => void;
   onBudgetPresetChange: (budget: BudgetPreset) => void;
@@ -651,9 +637,7 @@ function MarkdownPanel({
   const chunkBoundary =
     selectedChunk?.startNodeId && selectedChunk?.endNodeId
       ? `${selectedChunk.startNodeId} to ${selectedChunk.endNodeId}`
-      : selectedRange.type === "selection"
-        ? `${selectedRange.startNodeId} to ${selectedRange.endNodeId}`
-        : "Chapter";
+      : "Picked content";
 
   return (
     <div className="packet-panel">
@@ -682,31 +666,6 @@ function MarkdownPanel({
           <br />
           <strong>Estimated tokens:</strong> {packet?.estimatedTokens ?? "-"}
         </div>
-
-        <label className="field">
-          <span>Range</span>
-          <select
-            value={selectedRange.type}
-            onChange={(event) => {
-              if (event.target.value === "chapter") {
-                onRangeChange({ type: "chapter" });
-              } else if (selectedRange.type === "selection") {
-                onRangeChange(selectedRange);
-              }
-            }}
-          >
-            <option value="chapter">Chapter</option>
-            {selectedRange.type === "selection" ? (
-              <option value="selection">Selection</option>
-            ) : null}
-          </select>
-        </label>
-
-        {selectedRange.type === "selection" ? (
-          <div className="selection-range">
-            {selectedRange.startNodeId} to {selectedRange.endNodeId}
-          </div>
-        ) : null}
 
         <label className="field">
           <span>Task mode</span>
@@ -1067,98 +1026,7 @@ function SpineList({
   );
 }
 
-function EpubReader({
-  path,
-  spine,
-  targetHref,
-}: {
-  path: string;
-  spine: SpineItem | null;
-  targetHref: string | null;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const bookRef = useRef<Book | null>(null);
-  const renditionRef = useRef<Rendition | null>(null);
-  const [readerState, setReaderState] = useState<
-    "idle" | "loading" | "ready" | "failed"
-  >("idle");
-  const [readerError, setReaderError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadBook() {
-      if (!path.trim() || !containerRef.current) {
-        setReaderState("idle");
-        return;
-      }
-
-      setReaderState("loading");
-      setReaderError(null);
-      renditionRef.current?.destroy();
-      bookRef.current?.destroy();
-      renditionRef.current = null;
-      bookRef.current = null;
-      containerRef.current.replaceChildren();
-
-      try {
-        const bytes = await readEpubFile(path);
-        if (cancelled || !containerRef.current) return;
-
-        const buffer = epubBytesToArrayBuffer(bytes);
-        const book = Epub(buffer, { openAs: "binary" });
-        const rendition = book.renderTo(containerRef.current, {
-          width: "100%",
-          height: "100%",
-          flow: "paginated",
-          spread: "none",
-        });
-
-        bookRef.current = book;
-        renditionRef.current = rendition;
-        await withTimeout(book.ready, 10000, "EPUB metadata load timed out");
-        if (cancelled) return;
-
-        await withTimeout(
-          rendition.display(targetHref ?? spine?.href),
-          10000,
-          "EPUB chapter render timed out",
-        );
-        if (!cancelled) {
-          setReaderState("ready");
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setReaderState("failed");
-          setReaderError(err instanceof Error ? err.message : String(err));
-        }
-      }
-    }
-
-    void loadBook();
-
-    return () => {
-      cancelled = true;
-      renditionRef.current?.destroy();
-      bookRef.current?.destroy();
-      renditionRef.current = null;
-      bookRef.current = null;
-    };
-  }, [path]);
-
-  useEffect(() => {
-    if (!spine || readerState !== "ready") return;
-    void renditionRef.current?.display(targetHref ?? spine.href);
-  }, [readerState, spine, targetHref]);
-
-  async function goPrevious() {
-    await renditionRef.current?.prev();
-  }
-
-  async function goNext() {
-    await renditionRef.current?.next();
-  }
-
+function Reader({ spine }: { spine: SpineItem | null }) {
   if (!spine) {
     return (
       <article className="pane epub-pane">
@@ -1171,95 +1039,64 @@ function EpubReader({
     <article className="pane epub-pane">
       <div className="epub-meta">
         <span>{spine.title || "EPUB chapter"}</span>
-        <div className="reader-nav">
-          <button
-            className="icon-btn"
-            disabled={readerState !== "ready"}
-            onClick={goPrevious}
-            type="button"
-            aria-label="Previous page"
-          >
-            <ChevronLeftIcon />
-          </button>
-          <button
-            className="icon-btn"
-            disabled={readerState !== "ready"}
-            onClick={goNext}
-            type="button"
-            aria-label="Next page"
-          >
-            <ChevronRightIcon />
-          </button>
-        </div>
+        <strong>{spine.content.nodes.length} semantic blocks</strong>
       </div>
-      <div className="epub-renderer">
-        <div ref={containerRef} className="epub-rendition" />
-        {readerState === "loading" ? (
-          <div className="reader-overlay">Loading EPUB</div>
-        ) : null}
-        {readerState === "failed" ? (
-          <div className="reader-overlay error">{readerError}</div>
-        ) : null}
+      <div className="epub-body">
+        {spine.content.nodes.map((node) => (
+          <ContentBlock key={node.id} node={node} />
+        ))}
       </div>
     </article>
   );
 }
 
-function epubBytesToArrayBuffer(bytes: number[] | Uint8Array) {
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const buffer = new ArrayBuffer(view.byteLength);
-  new Uint8Array(buffer).set(view);
-  return buffer;
-}
+function ContentBlock({ node }: { node: ContentNode }) {
+  const common = {
+    "data-node-id": node.id,
+    "data-source-href": node.source.href,
+  };
 
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
-  return new Promise<T>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => reject(new Error(message)), ms);
-    promise.then(
-      (value) => {
-        window.clearTimeout(timeoutId);
-        resolve(value);
-      },
-      (err: unknown) => {
-        window.clearTimeout(timeoutId);
-        reject(err);
-      },
-    );
-  });
-}
-
-function ChevronLeftIcon() {
-  return (
-    <svg
-      className="icon"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      aria-hidden="true"
-    >
-      <path d="m15 18-6-6 6-6" />
-    </svg>
-  );
-}
-
-function ChevronRightIcon() {
-  return (
-    <svg
-      className="icon"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      aria-hidden="true"
-    >
-      <path d="m9 18 6-6-6-6" />
-    </svg>
-  );
+  switch (node.kind) {
+    case "heading": {
+      const level = Math.min(Math.max(node.level ?? 2, 1), 6);
+      return React.createElement(`h${level}`, common, node.text);
+    }
+    case "paragraph":
+      return <p {...common}>{node.text}</p>;
+    case "blockquote":
+      return <blockquote {...common}>{node.text}</blockquote>;
+    case "code":
+      return (
+        <pre {...common}>
+          <code>{node.text}</code>
+        </pre>
+      );
+    case "list":
+      return (
+        <ul {...common}>
+          {node.children.map((child) => (
+            <li key={child.id} data-node-id={child.id}>
+              {child.text}
+            </li>
+          ))}
+        </ul>
+      );
+    case "image":
+      return (
+        <figure {...common}>
+          <div className="image-placeholder">Image omitted</div>
+          {node.text ? <figcaption>{node.text}</figcaption> : null}
+        </figure>
+      );
+    case "thematicBreak":
+      return <hr {...common} />;
+    default:
+      return (
+        <section className="unsupported-node" {...common}>
+          {node.text || node.kind}
+        </section>
+      );
+  }
 }
 
 createRoot(document.getElementById("root")!).render(

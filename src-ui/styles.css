@@ -302,11 +302,6 @@ button:disabled {
   width: 18px;
 }
 
-.icon {
-  height: 18px;
-  width: 18px;
-}
-
 [data-tooltip] {
   position: relative;
 }
@@ -606,44 +601,85 @@ button:disabled {
   white-space: nowrap;
 }
 
-.reader-nav {
-  display: flex;
-  gap: 6px;
+.epub-body {
+  margin: 0 auto;
+  max-width: 760px;
 }
 
-.epub-renderer {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  position: relative;
+.epub-body h1,
+.epub-body h2,
+.epub-body h3,
+.epub-body h4,
+.epub-body h5,
+.epub-body h6 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  line-height: 1.2;
 }
 
-.epub-rendition {
-  height: 100%;
-  width: 100%;
+.epub-body h1 {
+  font-size: 36px;
+  margin: 0 0 28px;
 }
 
-.epub-rendition iframe {
-  background: #fff;
+.epub-body h2 {
+  font-size: 24px;
+  margin: 40px 0 14px;
 }
 
-.reader-overlay {
-  align-items: center;
-  background: color-mix(in oklch, var(--surface) 88%, transparent);
+.epub-body h3 {
+  font-size: 18px;
+  margin: 28px 0 10px;
+}
+
+.epub-body p,
+.epub-body li {
+  color: var(--fg);
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+
+.epub-body blockquote {
+  border-left: 2px solid var(--accent);
   color: var(--muted);
-  display: flex;
-  font-size: 13px;
-  inset: 0;
-  justify-content: center;
-  padding: 24px;
-  position: absolute;
-  text-align: center;
+  font-family: var(--font-display);
+  font-style: italic;
+  margin: 18px 0;
+  padding-left: 18px;
 }
 
-.reader-overlay.error {
-  color: oklch(38% 0.1 28);
+.epub-body pre {
+  background: oklch(97% 0.005 95);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 18px 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.epub-body code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.image-placeholder,
+.unsupported-node {
+  background: oklch(97% 0.005 95);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  padding: 18px;
+}
+
+.image-placeholder {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
 }
 
 .packet-panel {
@@ -690,7 +726,6 @@ button:disabled {
   resize: vertical;
 }
 
-.selection-range,
 .packet-meta {
   background: oklch(97% 0.005 95);
   border: 1px solid var(--border);
