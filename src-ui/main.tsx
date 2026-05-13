@@ -1,13 +1,13 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import Epub, { type Book, type Rendition } from "epubjs";
 import "./styles.css";
-import { generateStudyPacket, openBook } from "./api";
+import { generateStudyPacket, openBook, readEpubFile } from "./api";
 import type {
   BookSummary,
   BudgetPreset,
   ChunkingMode,
-  ContentNode,
   GeneratedMarkdown,
   GeneratedMarkdownChunk,
   ModelProfile,
@@ -73,6 +73,20 @@ function App() {
   const [chunking, setChunking] = useState<ChunkingMode>("auto");
   const [customInstruction, setCustomInstruction] = useState("");
   const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
+  const [tocCollapsed, setTocCollapsed] = useState(false);
+  const [packetCollapsed, setPacketCollapsed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewWidthPercent, setPreviewWidthPercent] = useState(50);
+  const [resizingPreview, setResizingPreview] = useState(false);
+  const readerContentRef = useRef<HTMLDivElement | null>(null);
+  const [activeTocNodeId, setActiveTocNodeId] = useState<string | null>(null);
+  const [activeTocHref, setActiveTocHref] = useState<string | null>(null);
+  const [pickedTocNodeIds, setPickedTocNodeIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [pickedSpineIds, setPickedSpineIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [selectedRange, setSelectedRange] = useState<PacketRange>({
     type: "chapter",
   });
@@ -87,6 +101,47 @@ function App() {
     );
   }, [activeSpineId, book]);
 
+  const tocNodeIds = useMemo(
+    () => (book ? flattenTocNodeIds(book.toc) : []),
+    [book],
+  );
+  const hasToc = Boolean(book?.toc.length);
+  const pickTotal = book ? (hasToc ? tocNodeIds.length : book.spine.length) : 0;
+  const pickedCount = book
+    ? hasToc
+      ? tocNodeIds.filter((id) => pickedTocNodeIds.has(id)).length
+      : book.spine.filter((item) => pickedSpineIds.has(item.id)).length
+    : 0;
+  const allItemsPicked = pickTotal > 0 && pickedCount === pickTotal;
+
+  useEffect(() => {
+    if (!resizingPreview) return;
+
+    function handlePointerMove(event: PointerEvent) {
+      const container = readerContentRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const previewWidth = rect.right - event.clientX;
+      const percent = (previewWidth / rect.width) * 100;
+      setPreviewWidthPercent(Math.max(30, Math.min(70, percent)));
+    }
+
+    function stopResizing() {
+      setResizingPreview(false);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResizing, { once: true });
+    document.body.classList.add("is-resizing-pane");
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResizing);
+      document.body.classList.remove("is-resizing-pane");
+    };
+  }, [resizingPreview]);
+
   async function openBookPath(nextPath: string) {
     setLoading(true);
     setError(null);
@@ -95,15 +150,25 @@ function App() {
       setPath(nextPath);
       setBook(opened);
       setActiveSpineId(opened.spine[0]?.id ?? null);
+      setActiveTocNodeId(null);
+      setActiveTocHref(null);
+      setPickedTocNodeIds(new Set());
+      setPickedSpineIds(new Set());
       setMarkdownPacket(null);
       setCopyState("idle");
       setSelectedChunkIndex(0);
+      setPreviewOpen(false);
       setSelectedRange({ type: "chapter" });
     } catch (err) {
       setBook(null);
       setActiveSpineId(null);
+      setActiveTocNodeId(null);
+      setActiveTocHref(null);
+      setPickedTocNodeIds(new Set());
+      setPickedSpineIds(new Set());
       setMarkdownPacket(null);
       setSelectedChunkIndex(0);
+      setPreviewOpen(false);
       setSelectedRange({ type: "chapter" });
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -125,10 +190,60 @@ function App() {
 
   async function handleSelectSpine(spineId: string) {
     setActiveSpineId(spineId);
+    setActiveTocNodeId(null);
+    setActiveTocHref(null);
     setMarkdownPacket(null);
     setCopyState("idle");
     setSelectedChunkIndex(0);
     setSelectedRange({ type: "chapter" });
+  }
+
+  function handleSelectTocNode(node: TocNode, spineId: string) {
+    setActiveSpineId(spineId);
+    setActiveTocNodeId(node.id);
+    setActiveTocHref(node.anchor ? `${node.href}#${node.anchor}` : node.href);
+    setMarkdownPacket(null);
+    setCopyState("idle");
+    setSelectedChunkIndex(0);
+    setSelectedRange({ type: "chapter" });
+  }
+
+  function handleToggleTocPick(node: TocNode, picked: boolean) {
+    const nodeIds = tocNodeWithDescendantIds(node);
+    setPickedTocNodeIds((current) => {
+      const next = new Set(current);
+      for (const nodeId of nodeIds) {
+        if (picked) {
+          next.add(nodeId);
+        } else {
+          next.delete(nodeId);
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleToggleSpinePick(spineId: string, picked: boolean) {
+    setPickedSpineIds((current) => {
+      const next = new Set(current);
+      if (picked) {
+        next.add(spineId);
+      } else {
+        next.delete(spineId);
+      }
+      return next;
+    });
+  }
+
+  function handleToggleAllSpines() {
+    if (!book) return;
+    if (hasToc) {
+      setPickedTocNodeIds(allItemsPicked ? new Set() : new Set(tocNodeIds));
+    } else {
+      setPickedSpineIds(
+        allItemsPicked ? new Set() : new Set(book.spine.map((item) => item.id)),
+      );
+    }
   }
 
   async function handleGenerateMarkdown() {
@@ -150,6 +265,8 @@ function App() {
       });
       setMarkdownPacket(packet);
       setSelectedChunkIndex(0);
+      setPreviewWidthPercent(50);
+      setPreviewOpen(true);
     } catch (err) {
       setMarkdownPacket(null);
       setError(err instanceof Error ? err.message : String(err));
@@ -185,131 +302,303 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <h1>Scholia</h1>
-          <p>Desktop EPUB study companion</p>
-        </div>
-        <div className="open-form">
-          <button disabled={loading} onClick={handleChooseFile} type="button">
-            {loading ? "Opening" : "Choose EPUB"}
-          </button>
-          <span className="selected-path">{path || "No EPUB selected"}</span>
+      <header className="titlebar">
+        <div className="title">Scholia</div>
+        <div className="win-controls" aria-hidden="true">
+          <span className="win-btn" />
+          <span className="win-btn" />
+          <span className="win-btn" />
         </div>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      {book ? (
-        <section className="workspace">
-          <aside className="toc-panel">
-            <BookMeta book={book} />
-            <h2>Contents</h2>
-            {book.toc.length > 0 ? (
-              <TocList
-                nodes={book.toc}
-                spine={book.spine}
-                activeSpineId={activeSpine?.id ?? null}
-                onSelect={handleSelectSpine}
-              />
+      <section className="body">
+        <aside
+          className={`sidebar sidebar-left${tocCollapsed ? " collapsed" : ""}`}
+        >
+          <button
+            aria-label={tocCollapsed ? "Expand contents" : "Collapse contents"}
+            className="sidebar-toggle"
+            onClick={() => setTocCollapsed((collapsed) => !collapsed)}
+            type="button"
+          >
+            {tocCollapsed ? ">" : "<"}
+          </button>
+          <div className="sidebar-inner">
+            <header className="sidebar-header">
+              <span className="sidebar-title">Contents</span>
+            </header>
+            {book ? (
+              <>
+                <BookMeta book={book} />
+                <div className="toc-toolbar">
+                  <span className="toc-count">
+                    {pickedCount}/{pickTotal} selected
+                  </span>
+                  <div className="toc-actions">
+                    <button
+                      className="toc-action"
+                      onClick={handleToggleAllSpines}
+                      type="button"
+                    >
+                      {allItemsPicked ? "Deselect all" : "Select all"}
+                    </button>
+                    <button
+                      className="toc-action"
+                      disabled={loading}
+                      onClick={handleChooseFile}
+                      type="button"
+                    >
+                      Open
+                    </button>
+                  </div>
+                </div>
+                <div className="toc-scroll">
+                  {book.toc.length > 0 ? (
+                    <TocList
+                      nodes={book.toc}
+                      spine={book.spine}
+                      activeSpineId={activeSpine?.id ?? null}
+                      activeTocNodeId={activeTocNodeId}
+                      pickedTocNodeIds={pickedTocNodeIds}
+                      onSelect={handleSelectTocNode}
+                      onTogglePick={handleToggleTocPick}
+                    />
+                  ) : (
+                    <SpineList
+                      spine={book.spine}
+                      activeSpineId={activeSpine?.id ?? null}
+                      pickedSpineIds={pickedSpineIds}
+                      onSelect={handleSelectSpine}
+                      onTogglePick={handleToggleSpinePick}
+                    />
+                  )}
+                </div>
+              </>
             ) : (
-              <SpineList
-                spine={book.spine}
-                activeSpineId={activeSpine?.id ?? null}
-                onSelect={handleSelectSpine}
-              />
+              <div className="toc-empty">
+                <button
+                  className="btn btn-primary"
+                  disabled={loading}
+                  onClick={handleChooseFile}
+                  type="button"
+                >
+                  {loading ? "Opening" : "Choose EPUB"}
+                </button>
+              </div>
             )}
-          </aside>
+          </div>
+        </aside>
 
-          <Reader
-            spine={activeSpine}
-            onSelectionChange={(range) => {
-              setSelectedRange(range);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-          />
-          <MarkdownPanel
-            packet={markdownPacket}
-            spine={activeSpine}
-            loading={markdownLoading}
-            copyState={copyState}
-            taskMode={taskMode}
-            modelProfile={modelProfile}
-            budgetPreset={budgetPreset}
-            customBudgetTokens={customBudgetTokens}
-            chunking={chunking}
-            customInstruction={customInstruction}
-            selectedChunkIndex={selectedChunkIndex}
-            selectedRange={selectedRange}
-            onRangeChange={(range) => {
-              setSelectedRange(range);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-            onTaskModeChange={(value) => {
-              setTaskMode(value);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-            onModelProfileChange={(value) => {
-              setModelProfile(value);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-            onBudgetPresetChange={(value) => {
-              setBudgetPreset(value);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-            onCustomBudgetTokensChange={(value) => {
-              setCustomBudgetTokens(value);
-              if (budgetPreset === "custom") {
+        <section className="reader-main">
+          <header className="reader-toolbar">
+            <div className="breadcrumb" title={path || undefined}>
+              {book
+                ? `${book.title} > ${activeSpine?.title || activeSpine?.href || "No chapter selected"}`
+                : "No book loaded"}
+            </div>
+            <div className="toolbar-actions">
+              <span className="path-chip">{path || "No EPUB selected"}</span>
+              <button
+                aria-label="Toggle generated preview"
+                aria-pressed={previewOpen}
+                className="btn icon-btn"
+                data-tooltip="Toggle preview pane"
+                onClick={() => setPreviewOpen((open) => !open)}
+                type="button"
+              >
+                <SplitPaneIcon />
+              </button>
+            </div>
+          </header>
+
+          {book ? (
+            <div
+              className={`reader-content${previewOpen ? " dual" : ""}`}
+              ref={readerContentRef}
+              style={
+                previewOpen
+                  ? ({
+                      "--preview-width": `${previewWidthPercent}%`,
+                    } as React.CSSProperties)
+                  : undefined
+              }
+            >
+              <EpubReader
+                path={path}
+                spine={activeSpine}
+                targetHref={activeTocHref ?? activeSpine?.href ?? null}
+              />
+              <div
+                aria-label="Resize viewer and packet preview"
+                className={`resizer${resizingPreview ? " dragging" : ""}`}
+                onDoubleClick={() => setPreviewWidthPercent(50)}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  setResizingPreview(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") {
+                    setPreviewWidthPercent((width) => Math.min(70, width + 5));
+                  } else if (event.key === "ArrowRight") {
+                    setPreviewWidthPercent((width) => Math.max(30, width - 5));
+                  } else if (event.key === "Home") {
+                    setPreviewWidthPercent(30);
+                  } else if (event.key === "End") {
+                    setPreviewWidthPercent(70);
+                  } else if (event.key === "Enter" || event.key === " ") {
+                    setPreviewWidthPercent(50);
+                  }
+                }}
+                role="separator"
+                tabIndex={0}
+              />
+              <GeneratedPreview
+                packet={markdownPacket}
+                selectedChunkIndex={selectedChunkIndex}
+              />
+            </div>
+          ) : (
+            <section className="empty-state">
+              <BookIcon />
+              <h2>No EPUB loaded</h2>
+              <p>Choose a DRM-free EPUB to inspect and generate study packets.</p>
+              <button
+                className="btn btn-primary"
+                disabled={loading}
+                onClick={handleChooseFile}
+                type="button"
+              >
+                {loading ? "Opening" : "Choose EPUB"}
+              </button>
+            </section>
+          )}
+        </section>
+
+        <aside
+          className={`sidebar sidebar-right${packetCollapsed ? " collapsed" : ""}`}
+        >
+          <button
+            aria-label={packetCollapsed ? "Expand packet" : "Collapse packet"}
+            className="sidebar-toggle"
+            onClick={() => setPacketCollapsed((collapsed) => !collapsed)}
+            type="button"
+          >
+            {packetCollapsed ? "<" : ">"}
+          </button>
+          <div className="sidebar-inner">
+            <MarkdownPanel
+              packet={markdownPacket}
+              book={book}
+              spine={activeSpine}
+              loading={markdownLoading}
+              copyState={copyState}
+              taskMode={taskMode}
+              modelProfile={modelProfile}
+              budgetPreset={budgetPreset}
+              customBudgetTokens={customBudgetTokens}
+              chunking={chunking}
+              customInstruction={customInstruction}
+              selectedChunkIndex={selectedChunkIndex}
+              selectedRange={selectedRange}
+              onRangeChange={(range) => {
+                setSelectedRange(range);
                 setMarkdownPacket(null);
                 setCopyState("idle");
                 setSelectedChunkIndex(0);
-              }
-            }}
-            onChunkingChange={(value) => {
-              setChunking(value);
-              setMarkdownPacket(null);
-              setCopyState("idle");
-              setSelectedChunkIndex(0);
-            }}
-            onCustomInstructionChange={(value) => {
-              setCustomInstruction(value);
-              if (taskMode === "custom") {
+              }}
+              onTaskModeChange={(value) => {
+                setTaskMode(value);
                 setMarkdownPacket(null);
                 setCopyState("idle");
                 setSelectedChunkIndex(0);
-              }
-            }}
-            onSelectedChunkIndexChange={setSelectedChunkIndex}
-            onGenerate={handleGenerateMarkdown}
-            onCopy={handleCopyMarkdown}
-            onCopyAll={handleCopyAllMarkdown}
-          />
-        </section>
-      ) : (
-        <section className="empty-state">
-          <h2>Open a DRM-free EPUB to inspect its semantic structure.</h2>
-          <p>
-            Milestone 2 renders the parsed spine and table of contents from the
-            Rust ingestion layer.
-          </p>
-        </section>
-      )}
+              }}
+              onModelProfileChange={(value) => {
+                setModelProfile(value);
+                setMarkdownPacket(null);
+                setCopyState("idle");
+                setSelectedChunkIndex(0);
+              }}
+              onBudgetPresetChange={(value) => {
+                setBudgetPreset(value);
+                setMarkdownPacket(null);
+                setCopyState("idle");
+                setSelectedChunkIndex(0);
+              }}
+              onCustomBudgetTokensChange={(value) => {
+                setCustomBudgetTokens(value);
+                if (budgetPreset === "custom") {
+                  setMarkdownPacket(null);
+                  setCopyState("idle");
+                  setSelectedChunkIndex(0);
+                }
+              }}
+              onChunkingChange={(value) => {
+                setChunking(value);
+                setMarkdownPacket(null);
+                setCopyState("idle");
+                setSelectedChunkIndex(0);
+              }}
+              onCustomInstructionChange={(value) => {
+                setCustomInstruction(value);
+                if (taskMode === "custom") {
+                  setMarkdownPacket(null);
+                  setCopyState("idle");
+                  setSelectedChunkIndex(0);
+                }
+              }}
+              onSelectedChunkIndexChange={setSelectedChunkIndex}
+              onGenerate={handleGenerateMarkdown}
+              onCopy={handleCopyMarkdown}
+              onCopyAll={handleCopyAllMarkdown}
+            />
+          </div>
+        </aside>
+      </section>
     </main>
+  );
+}
+
+function SplitPaneIcon() {
+  return (
+    <svg
+      className="icon-split"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <line x1="12" y1="3" x2="12" y2="21" />
+    </svg>
+  );
+}
+
+function BookIcon() {
+  return (
+    <svg
+      className="skeleton-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.5"
+      aria-hidden="true"
+    >
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
   );
 }
 
 function MarkdownPanel({
   packet,
+  book,
   spine,
   loading,
   copyState,
@@ -334,6 +623,7 @@ function MarkdownPanel({
   onCopyAll,
 }: {
   packet: GeneratedMarkdown | null;
+  book: BookSummary | null;
   spine: SpineItem | null;
   loading: boolean;
   copyState: "idle" | "copied" | "failed";
@@ -358,22 +648,42 @@ function MarkdownPanel({
   onCopyAll: () => void;
 }) {
   const selectedChunk = packet?.chunks[selectedChunkIndex] ?? packet?.chunks[0];
-  const previewMarkdown = selectedChunk?.markdown ?? packet?.markdown ?? "";
+  const chunkBoundary =
+    selectedChunk?.startNodeId && selectedChunk?.endNodeId
+      ? `${selectedChunk.startNodeId} to ${selectedChunk.endNodeId}`
+      : selectedRange.type === "selection"
+        ? `${selectedRange.startNodeId} to ${selectedRange.endNodeId}`
+        : "Chapter";
 
   return (
-    <aside className="packet-panel">
-      <header className="packet-header">
-        <div>
-          <h2>Study Packet</h2>
-          <p>{spine?.title || spine?.href || "No chapter selected"}</p>
-        </div>
-        <button disabled={!spine || loading} onClick={onGenerate} type="button">
-          {loading ? "Generating" : "Generate"}
-        </button>
+    <div className="packet-panel">
+      <header className="sidebar-header">
+        <span className="sidebar-title">Packet</span>
       </header>
 
-      <div className="packet-controls">
-        <label>
+      <div className="tab-panel">
+        <div className="packet-meta">
+          <strong>Book:</strong> {book?.title ?? "No book loaded"}
+          <br />
+          <strong>Author:</strong> {book?.authors.join(", ") || "Unknown"}
+          <br />
+          <strong>Chapter:</strong> {spine?.title || spine?.href || "None"}
+          <br />
+          <strong>Internal source:</strong> {packet?.location || spine?.href || "-"}
+          <br />
+          <strong>Chunk:</strong>{" "}
+          {packet
+            ? `${selectedChunk?.chunkNumber ?? 1} of ${selectedChunk?.totalChunks ?? 1}`
+            : "-"}
+          <br />
+          <strong>Chunk boundary:</strong> {chunkBoundary}
+          <br />
+          <strong>Budget:</strong> {budgetLabel(budgetPreset, customBudgetTokens)}
+          <br />
+          <strong>Estimated tokens:</strong> {packet?.estimatedTokens ?? "-"}
+        </div>
+
+        <label className="field">
           <span>Range</span>
           <select
             value={selectedRange.type}
@@ -398,8 +708,8 @@ function MarkdownPanel({
           </div>
         ) : null}
 
-        <label>
-          <span>Task</span>
+        <label className="field">
+          <span>Task mode</span>
           <select
             value={taskMode}
             onChange={(event) =>
@@ -414,8 +724,8 @@ function MarkdownPanel({
           </select>
         </label>
 
-        <label>
-          <span>Model</span>
+        <label className="field">
+          <span>Model profile</span>
           <select
             value={modelProfile}
             onChange={(event) =>
@@ -430,8 +740,8 @@ function MarkdownPanel({
           </select>
         </label>
 
-        <label>
-          <span>Budget</span>
+        <label className="field">
+          <span>Token budget</span>
           <select
             value={budgetPreset}
             onChange={(event) =>
@@ -447,7 +757,7 @@ function MarkdownPanel({
         </label>
 
         {budgetPreset === "custom" ? (
-          <label>
+          <label className="field">
             <span>Custom budget</span>
             <input
               min={1}
@@ -460,7 +770,7 @@ function MarkdownPanel({
           </label>
         ) : null}
 
-        <label>
+        <label className="field">
           <span>Chunking</span>
           <select
             value={chunking}
@@ -477,8 +787,8 @@ function MarkdownPanel({
         </label>
 
         {taskMode === "custom" ? (
-          <label>
-            <span>Instruction</span>
+          <label className="field">
+            <span>Custom instruction</span>
             <textarea
               value={customInstruction}
               onChange={(event) =>
@@ -488,56 +798,89 @@ function MarkdownPanel({
             />
           </label>
         ) : null}
-      </div>
 
-      {packet ? (
-        <>
-          <dl className="packet-meta">
-            <div>
-              <dt>Tokens</dt>
-              <dd>{packet.estimatedTokens}</dd>
-            </div>
-            <div>
-              <dt>Chunks</dt>
-              <dd>{packet.chunks.length}</dd>
-            </div>
-            <div>
-              <dt>Location</dt>
-              <dd>{packet.location}</dd>
-            </div>
-          </dl>
-          {packet.chunks.length > 1 ? (
+        {packet && packet.chunks.length > 1 ? (
+          <div className="field">
+            <span className="field-label">Chunks</span>
             <ChunkSelector
               chunks={packet.chunks}
               selectedChunkIndex={selectedChunkIndex}
               onSelect={onSelectedChunkIndexChange}
             />
-          ) : null}
-          <textarea
-            readOnly
-            className="packet-preview"
-            value={previewMarkdown}
-            aria-label="Generated Markdown preview"
-          />
-          <div className="packet-actions">
-            <button onClick={onCopy} type="button">
-              Copy Chunk
-            </button>
-            {packet.chunks.length > 1 ? (
-              <button onClick={onCopyAll} type="button">
-                Copy All
-              </button>
-            ) : null}
-            {copyState === "copied" ? <span>Copied</span> : null}
-            {copyState === "failed" ? <span>Copy failed</span> : null}
           </div>
-        </>
-      ) : (
-        <div className="packet-empty">
-          <p>Generate a task-specific study packet for the selected chapter.</p>
+        ) : null}
+
+        <div className="packet-actions">
+          <button
+            className="btn btn-primary"
+            disabled={!spine || loading}
+            onClick={onGenerate}
+            type="button"
+          >
+            {loading ? "Generating" : "Parse"}
+          </button>
+          <button className="btn" disabled={!packet} onClick={onCopy} type="button">
+            Copy Chunk
+          </button>
+          {packet && packet.chunks.length > 1 ? (
+            <button className="btn" onClick={onCopyAll} type="button">
+              Copy All
+            </button>
+          ) : null}
         </div>
-      )}
-    </aside>
+
+        <div className="copy-state" aria-live="polite">
+          {copyState === "copied" ? "Copied" : null}
+          {copyState === "failed" ? "Copy failed" : null}
+          {copyState === "idle" && !packet
+            ? "Generated markdown appears in the preview pane."
+            : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function budgetLabel(preset: BudgetPreset, customBudgetTokens: number) {
+  const option = budgetOptions.find((item) => item.value === preset);
+  return preset === "custom"
+    ? `${customBudgetTokens.toLocaleString()} tokens`
+    : (option?.label ?? preset);
+}
+
+function GeneratedPreview({
+  packet,
+  selectedChunkIndex,
+}: {
+  packet: GeneratedMarkdown | null;
+  selectedChunkIndex: number;
+}) {
+  const selectedChunk = packet?.chunks[selectedChunkIndex] ?? packet?.chunks[0];
+  const previewMarkdown = selectedChunk?.markdown ?? packet?.markdown ?? "";
+
+  return (
+    <section className="pane generated-pane" aria-label="Generated packet">
+      <div className="generated-body">
+        {packet ? (
+          <>
+            <div className="token-badge">
+              {selectedChunk?.estimatedTokens ?? packet.estimatedTokens} tokens
+              estimated
+            </div>
+            <textarea
+              readOnly
+              className="preview-box"
+              value={previewMarkdown}
+              aria-label="Generated Markdown preview"
+            />
+          </>
+        ) : (
+          <div className="preview-box empty">
+            Generate a study packet for the selected chapter or selection.
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -580,182 +923,343 @@ function TocList({
   nodes,
   spine,
   activeSpineId,
+  activeTocNodeId,
+  pickedTocNodeIds,
   onSelect,
+  onTogglePick,
+  level = 1,
 }: {
   nodes: TocNode[];
   spine: SpineItem[];
   activeSpineId: string | null;
-  onSelect: (spineId: string) => void;
+  activeTocNodeId: string | null;
+  pickedTocNodeIds: Set<string>;
+  onSelect: (node: TocNode, spineId: string) => void;
+  onTogglePick: (node: TocNode, picked: boolean) => void;
+  level?: number;
 }) {
   return (
-    <nav className="toc-list">
+    <ul className={`toc-list level-${Math.min(level, 3)}`}>
       {nodes.map((node) => {
-        const spineItem = spine.find((item) => item.href === node.href);
-        const isActive = spineItem?.id === activeSpineId;
+        const spineItem = spine.find(
+          (item) =>
+            hrefWithoutFragment(item.href) === hrefWithoutFragment(node.href),
+        );
+        const isActive =
+          node.id === activeTocNodeId ||
+          (!activeTocNodeId && level === 1 && spineItem?.id === activeSpineId);
+        const childIds = flattenTocNodeIds(node.children);
+        const isPicked = pickedTocNodeIds.has(node.id);
+        const isPartial =
+          !isPicked && childIds.some((nodeId) => pickedTocNodeIds.has(nodeId));
         return (
-          <button
-            key={node.id}
-            className={isActive ? "active" : ""}
-            disabled={!spineItem}
-            onClick={() => spineItem && onSelect(spineItem.id)}
-            type="button"
-          >
-            {node.title}
-          </button>
+          <li className="toc-node" key={node.id}>
+            <button
+              className={`toc-item level-${Math.min(level, 3)}${isActive ? " active" : ""}${isPicked ? " picked" : ""}`}
+              disabled={!spineItem}
+              onClick={() => spineItem && onSelect(node, spineItem.id)}
+              type="button"
+            >
+              <TocCheckbox
+                aria-label={`Include ${node.title}`}
+                checked={isPicked}
+                disabled={!spineItem}
+                indeterminate={isPartial}
+                onChange={(event) => {
+                  if (spineItem) {
+                    onTogglePick(node, event.target.checked);
+                  }
+                }}
+                onClick={(event) => event.stopPropagation()}
+              />
+              <span className="toc-label">{node.title}</span>
+            </button>
+            {node.children.length > 0 ? (
+              <TocList
+                nodes={node.children}
+                spine={spine}
+                activeSpineId={activeSpineId}
+                activeTocNodeId={activeTocNodeId}
+                pickedTocNodeIds={pickedTocNodeIds}
+                onSelect={onSelect}
+                onTogglePick={onTogglePick}
+                level={level + 1}
+              />
+            ) : null}
+          </li>
         );
       })}
-    </nav>
+    </ul>
+  );
+}
+
+function hrefWithoutFragment(href: string) {
+  return href.split("#", 1)[0];
+}
+
+function flattenTocNodeIds(nodes: TocNode[]): string[] {
+  return nodes.flatMap((node) => tocNodeWithDescendantIds(node));
+}
+
+function tocNodeWithDescendantIds(node: TocNode): string[] {
+  return [node.id, ...flattenTocNodeIds(node.children)];
+}
+
+function TocCheckbox({
+  indeterminate,
+  ...props
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "className" | "type"> & {
+  indeterminate: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+
+  return (
+    <input
+      {...props}
+      className="toc-check"
+      ref={inputRef}
+      type="checkbox"
+    />
   );
 }
 
 function SpineList({
   spine,
   activeSpineId,
+  pickedSpineIds,
   onSelect,
+  onTogglePick,
 }: {
   spine: SpineItem[];
   activeSpineId: string | null;
+  pickedSpineIds: Set<string>;
   onSelect: (spineId: string) => void;
+  onTogglePick: (spineId: string, picked: boolean) => void;
 }) {
   return (
-    <nav className="toc-list">
+    <ul className="toc-list level-1">
       {spine.map((item) => (
-        <button
-          key={item.id}
-          className={item.id === activeSpineId ? "active" : ""}
-          onClick={() => onSelect(item.id)}
-          type="button"
-        >
-          {item.title || item.href}
-        </button>
+        <li className="toc-node" key={item.id}>
+          <button
+            className={`toc-item level-1${item.id === activeSpineId ? " active" : ""}${pickedSpineIds.has(item.id) ? " picked" : ""}`}
+            onClick={() => onSelect(item.id)}
+            type="button"
+          >
+            <input
+              aria-label={`Include ${item.title || item.href}`}
+              checked={pickedSpineIds.has(item.id)}
+              className="toc-check"
+              onChange={(event) => onTogglePick(item.id, event.target.checked)}
+              onClick={(event) => event.stopPropagation()}
+              type="checkbox"
+            />
+            <span className="toc-label">{item.title || item.href}</span>
+          </button>
+        </li>
       ))}
-    </nav>
+    </ul>
   );
 }
 
-function Reader({
+function EpubReader({
+  path,
   spine,
-  onSelectionChange,
+  targetHref,
 }: {
+  path: string;
   spine: SpineItem | null;
-  onSelectionChange: (range: PacketRange) => void;
+  targetHref: string | null;
 }) {
-  function handleSelection() {
-    const range = getCurrentNodeSelectionRange();
-    if (range) {
-      onSelectionChange(range);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const bookRef = useRef<Book | null>(null);
+  const renditionRef = useRef<Rendition | null>(null);
+  const [readerState, setReaderState] = useState<
+    "idle" | "loading" | "ready" | "failed"
+  >("idle");
+  const [readerError, setReaderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBook() {
+      if (!path.trim() || !containerRef.current) {
+        setReaderState("idle");
+        return;
+      }
+
+      setReaderState("loading");
+      setReaderError(null);
+      renditionRef.current?.destroy();
+      bookRef.current?.destroy();
+      renditionRef.current = null;
+      bookRef.current = null;
+      containerRef.current.replaceChildren();
+
+      try {
+        const bytes = await readEpubFile(path);
+        if (cancelled || !containerRef.current) return;
+
+        const buffer = epubBytesToArrayBuffer(bytes);
+        const book = Epub(buffer, { openAs: "binary" });
+        const rendition = book.renderTo(containerRef.current, {
+          width: "100%",
+          height: "100%",
+          flow: "paginated",
+          spread: "none",
+        });
+
+        bookRef.current = book;
+        renditionRef.current = rendition;
+        await withTimeout(book.ready, 10000, "EPUB metadata load timed out");
+        if (cancelled) return;
+
+        await withTimeout(
+          rendition.display(targetHref ?? spine?.href),
+          10000,
+          "EPUB chapter render timed out",
+        );
+        if (!cancelled) {
+          setReaderState("ready");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setReaderState("failed");
+          setReaderError(err instanceof Error ? err.message : String(err));
+        }
+      }
     }
+
+    void loadBook();
+
+    return () => {
+      cancelled = true;
+      renditionRef.current?.destroy();
+      bookRef.current?.destroy();
+      renditionRef.current = null;
+      bookRef.current = null;
+    };
+  }, [path]);
+
+  useEffect(() => {
+    if (!spine || readerState !== "ready") return;
+    void renditionRef.current?.display(targetHref ?? spine.href);
+  }, [readerState, spine, targetHref]);
+
+  async function goPrevious() {
+    await renditionRef.current?.prev();
+  }
+
+  async function goNext() {
+    await renditionRef.current?.next();
   }
 
   if (!spine) {
     return (
-      <article className="reader">
+      <article className="pane epub-pane">
         <p>No readable spine content was found.</p>
       </article>
     );
   }
 
   return (
-    <article
-      className="reader"
-      onKeyUp={handleSelection}
-      onMouseUp={handleSelection}
-    >
-      <header className="reader-header">
-        <span>{spine.href}</span>
-        <strong>{spine.content.nodes.length} nodes</strong>
-      </header>
-      <div className="reader-content">
-        {spine.content.nodes.map((node) => (
-          <ContentBlock key={node.id} node={node} />
-        ))}
+    <article className="pane epub-pane">
+      <div className="epub-meta">
+        <span>{spine.title || "EPUB chapter"}</span>
+        <div className="reader-nav">
+          <button
+            className="icon-btn"
+            disabled={readerState !== "ready"}
+            onClick={goPrevious}
+            type="button"
+            aria-label="Previous page"
+          >
+            <ChevronLeftIcon />
+          </button>
+          <button
+            className="icon-btn"
+            disabled={readerState !== "ready"}
+            onClick={goNext}
+            type="button"
+            aria-label="Next page"
+          >
+            <ChevronRightIcon />
+          </button>
+        </div>
+      </div>
+      <div className="epub-renderer">
+        <div ref={containerRef} className="epub-rendition" />
+        {readerState === "loading" ? (
+          <div className="reader-overlay">Loading EPUB</div>
+        ) : null}
+        {readerState === "failed" ? (
+          <div className="reader-overlay error">{readerError}</div>
+        ) : null}
       </div>
     </article>
   );
 }
 
-function getCurrentNodeSelectionRange(): PacketRange | null {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-    return null;
-  }
+function epubBytesToArrayBuffer(bytes: number[] | Uint8Array) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const buffer = new ArrayBuffer(view.byteLength);
+  new Uint8Array(buffer).set(view);
+  return buffer;
+}
 
-  const range = selection.getRangeAt(0);
-  const startElement = nodeElement(range.startContainer)?.closest(
-    "[data-node-id]",
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (err: unknown) => {
+        window.clearTimeout(timeoutId);
+        reject(err);
+      },
+    );
+  });
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
+      <path d="m15 18-6-6 6-6" />
+    </svg>
   );
-  const endElement = nodeElement(range.endContainer)?.closest("[data-node-id]");
-  if (
-    !(startElement instanceof HTMLElement) ||
-    !(endElement instanceof HTMLElement)
-  ) {
-    return null;
-  }
-
-  const position = startElement.compareDocumentPosition(endElement);
-  const isReversed = Boolean(position & Node.DOCUMENT_POSITION_PRECEDING);
-  const first = isReversed ? endElement : startElement;
-  const last = isReversed ? startElement : endElement;
-  const startNodeId = first.dataset.nodeId;
-  const endNodeId = last.dataset.nodeId;
-  if (!startNodeId || !endNodeId) {
-    return null;
-  }
-
-  return { type: "selection", startNodeId, endNodeId };
 }
 
-function nodeElement(node: Node): Element | null {
-  return node instanceof Element ? node : node.parentElement;
-}
-
-function ContentBlock({ node }: { node: ContentNode }) {
-  const common = {
-    "data-node-id": node.id,
-    "data-source-href": node.source.href,
-  };
-
-  switch (node.kind) {
-    case "heading": {
-      const level = Math.min(Math.max(node.level ?? 2, 1), 6);
-      return React.createElement(`h${level}`, common, node.text);
-    }
-    case "paragraph":
-      return <p {...common}>{node.text}</p>;
-    case "blockquote":
-      return <blockquote {...common}>{node.text}</blockquote>;
-    case "code":
-      return (
-        <pre {...common}>
-          <code>{node.text}</code>
-        </pre>
-      );
-    case "list":
-      return (
-        <ul {...common}>
-          {node.children.map((child) => (
-            <li key={child.id} data-node-id={child.id}>
-              {child.text}
-            </li>
-          ))}
-        </ul>
-      );
-    case "image":
-      return (
-        <figure {...common}>
-          <div className="image-placeholder">Image omitted</div>
-          {node.text ? <figcaption>{node.text}</figcaption> : null}
-        </figure>
-      );
-    case "thematicBreak":
-      return <hr {...common} />;
-    default:
-      return (
-        <section className="unsupported-node" {...common}>
-          {node.text || node.kind}
-        </section>
-      );
-  }
+function ChevronRightIcon() {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      aria-hidden="true"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
 }
 
 createRoot(document.getElementById("root")!).render(

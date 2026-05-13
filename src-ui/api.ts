@@ -5,6 +5,10 @@ export async function openBook(path: string): Promise<BookSummary> {
   return invoke<BookSummary>("open_book", { path });
 }
 
+export async function readEpubFile(path: string): Promise<number[] | Uint8Array> {
+  return invoke<number[] | Uint8Array>("read_epub_file", { path });
+}
+
 export async function generateStudyPacket(
   path: string,
   spineItemId: string,

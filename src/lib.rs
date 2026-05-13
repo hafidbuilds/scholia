@@ -864,6 +864,7 @@ fn parse_nav_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
     let mut nodes = Vec::new();
     let mut in_toc_nav = false;
     let mut nav_depth = 0usize;
+    let mut item_stack: Vec<Option<TocNode>> = Vec::new();
     let mut pending_link: Option<(String, String)> = None;
     let mut text = String::new();
     let mut counter = 0usize;
@@ -882,7 +883,9 @@ fn parse_nav_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
                     nav_depth = usize::from(in_toc_nav);
                 } else if in_toc_nav {
                     nav_depth += usize::from(event.kind == XmlEventKind::Start);
-                    if name == "a" {
+                    if name == "li" && event.kind == XmlEventKind::Start {
+                        item_stack.push(None);
+                    } else if name == "a" {
                         if let Some(href) = event.attrs.get("href") {
                             pending_link = Some((href.to_string(), String::new()));
                             text.clear();
@@ -902,9 +905,22 @@ fn parse_nav_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
                         let title = text.trim().to_string();
                         if !title.is_empty() {
                             counter += 1;
-                            nodes.push(toc_node(counter, title, href));
+                            let node = toc_node(counter, title, href);
+                            if let Some(current_item) = item_stack.last_mut() {
+                                *current_item = Some(node);
+                            } else {
+                                nodes.push(node);
+                            }
                         }
                         text.clear();
+                    }
+                } else if in_toc_nav && name == "li" {
+                    if let Some(Some(node)) = item_stack.pop() {
+                        if let Some(Some(parent)) = item_stack.last_mut() {
+                            parent.children.push(node);
+                        } else {
+                            nodes.push(node);
+                        }
                     }
                 }
                 if in_toc_nav {
@@ -922,8 +938,7 @@ fn parse_nav_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
 
 fn parse_ncx_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> {
     let mut nodes = Vec::new();
-    let mut current_label = String::new();
-    let mut current_src = None;
+    let mut stack: Vec<NcxNavPointBuilder> = Vec::new();
     let mut in_text = false;
     let mut counter = 0usize;
 
@@ -931,16 +946,21 @@ fn parse_ncx_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
         match event.kind {
             XmlEventKind::Start | XmlEventKind::Empty => {
                 let name = local_name(&event.name);
-                if name == "text" {
+                if name == "navPoint" {
+                    stack.push(NcxNavPointBuilder::default());
+                } else if name == "text" {
                     in_text = true;
-                    current_label.clear();
                 } else if name == "content" {
-                    current_src = event.attrs.get("src").cloned();
+                    if let Some(current) = stack.last_mut() {
+                        current.src = event.attrs.get("src").cloned();
+                    }
                 }
             }
             XmlEventKind::Text => {
                 if in_text {
-                    push_text(&mut current_label, &event.name);
+                    if let Some(current) = stack.last_mut() {
+                        push_text(&mut current.label, &event.name);
+                    }
                 }
             }
             XmlEventKind::End => {
@@ -948,20 +968,34 @@ fn parse_ncx_document(xml: &str, path: &str) -> Result<Vec<TocNode>, EpubError> 
                 if name == "text" {
                     in_text = false;
                 } else if name == "navPoint" {
-                    if let Some(src) = current_src.take() {
-                        let title = current_label.trim().to_string();
-                        if !title.is_empty() {
-                            counter += 1;
-                            nodes.push(toc_node(counter, title, src));
+                    if let Some(current) = stack.pop() {
+                        if let Some(src) = current.src {
+                            let title = current.label.trim().to_string();
+                            if !title.is_empty() {
+                                counter += 1;
+                                let mut node = toc_node(counter, title, src);
+                                node.children = current.children;
+                                if let Some(parent) = stack.last_mut() {
+                                    parent.children.push(node);
+                                } else {
+                                    nodes.push(node);
+                                }
+                            }
                         }
                     }
-                    current_label.clear();
                 }
             }
         }
     }
 
     Ok(nodes)
+}
+
+#[derive(Debug, Default)]
+struct NcxNavPointBuilder {
+    label: String,
+    src: Option<String>,
+    children: Vec<TocNode>,
 }
 
 fn parse_content_document(
@@ -1360,6 +1394,8 @@ mod tests {
         assert_eq!(book.toc.len(), 2);
         assert_eq!(book.toc[0].title, "Chapter 1");
         assert_eq!(book.toc[0].anchor.as_deref(), Some("ch1"));
+        assert_eq!(book.toc[0].children.len(), 1);
+        assert_eq!(book.toc[0].children[0].title, "Replication basics");
 
         let chapter = &book.spine[0];
         assert_eq!(chapter.href, "chapters/ch1.xhtml");
@@ -1589,7 +1625,12 @@ mod tests {
   <body>
     <nav epub:type="toc">
       <ol>
-        <li><a href="chapters/ch1.xhtml#ch1">Chapter 1</a></li>
+        <li>
+          <a href="chapters/ch1.xhtml#ch1">Chapter 1</a>
+          <ol>
+            <li><a href="chapters/ch1.xhtml#replication">Replication basics</a></li>
+          </ol>
+        </li>
         <li><a href="chapters/ch2.xhtml#ch2">Chapter 2</a></li>
       </ol>
     </nav>
