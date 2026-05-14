@@ -73,7 +73,6 @@ function App() {
   const [chunking, setChunking] = useState<ChunkingMode>("auto");
   const [customInstruction, setCustomInstruction] = useState("");
   const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
-  const [tocCollapsed, setTocCollapsed] = useState(false);
   const [packetCollapsed, setPacketCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewWidthPercent, setPreviewWidthPercent] = useState(50);
@@ -428,17 +427,7 @@ function App() {
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="body">
-        <aside
-          className={`sidebar sidebar-left${tocCollapsed ? " collapsed" : ""}`}
-        >
-          <button
-            aria-label={tocCollapsed ? "Expand contents" : "Collapse contents"}
-            className="sidebar-toggle"
-            onClick={() => setTocCollapsed((collapsed) => !collapsed)}
-            type="button"
-          >
-            {tocCollapsed ? ">" : "<"}
-          </button>
+        <aside className="sidebar sidebar-left sidebar-autohide">
           <div className="sidebar-inner">
             <header className="sidebar-header">
               <span className="sidebar-title">Contents</span>
