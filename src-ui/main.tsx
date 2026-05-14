@@ -499,18 +499,7 @@ function App() {
                   )}
                 </div>
               </>
-            ) : (
-              <div className="toc-empty">
-                <button
-                  className="btn btn-primary"
-                  disabled={loading}
-                  onClick={handleChooseFile}
-                  type="button"
-                >
-                  {loading ? "Opening" : "Choose EPUB"}
-                </button>
-              </div>
-            )}
+            ) : null}
           </div>
         </aside>
 

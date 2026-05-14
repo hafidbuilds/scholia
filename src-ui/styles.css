@@ -329,13 +329,6 @@ button:disabled {
   opacity: 1;
 }
 
-.toc-empty {
-  display: grid;
-  flex: 1;
-  padding: 18px;
-  place-items: start stretch;
-}
-
 .toc-scroll {
   flex: 1;
   overflow: auto;
