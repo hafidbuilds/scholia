@@ -792,12 +792,17 @@ button:disabled {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.6;
-  min-height: calc(100vh - 156px);
+  margin: 0;
+  min-height: 0;
   outline: none;
+  overflow: visible;
   padding: 18px;
-  resize: none;
   white-space: pre-wrap;
   width: 100%;
+}
+
+.preview-box + .preview-box {
+  border-top: 1px solid var(--border);
 }
 
 .preview-box.empty {

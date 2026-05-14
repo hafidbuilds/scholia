@@ -79,6 +79,11 @@ function App() {
   const [previewWidthPercent, setPreviewWidthPercent] = useState(50);
   const [resizingPreview, setResizingPreview] = useState(false);
   const readerContentRef = useRef<HTMLDivElement | null>(null);
+  const epubPaneRef = useRef<HTMLElement | null>(null);
+  const generatedPaneScrollRef = useRef<HTMLDivElement | null>(null);
+  const activeScrollPaneRef = useRef<"epub" | "packet" | null>(null);
+  const scrollSyncFrameRef = useRef<number | null>(null);
+  const scrollSourceClearRef = useRef<number | null>(null);
   const [activeTocNodeId, setActiveTocNodeId] = useState<string | null>(null);
   const [activeTocHref, setActiveTocHref] = useState<string | null>(null);
   const [pickedTocNodeIds, setPickedTocNodeIds] = useState<Set<string>>(
@@ -141,6 +146,123 @@ function App() {
       document.body.classList.remove("is-resizing-pane");
     };
   }, [resizingPreview]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+
+    const epubPane = epubPaneRef.current;
+    const generatedPane = generatedPaneScrollRef.current;
+    if (!epubPane || !generatedPane) return;
+    const epubScrollPane = epubPane;
+    const generatedScrollPane = generatedPane;
+
+    function markUserScrollSource(source: "epub" | "packet") {
+      activeScrollPaneRef.current = source;
+      if (scrollSourceClearRef.current !== null) {
+        window.clearTimeout(scrollSourceClearRef.current);
+      }
+      scrollSourceClearRef.current = window.setTimeout(() => {
+        activeScrollPaneRef.current = null;
+      }, 180);
+    }
+
+    function syncScroll(
+      source: HTMLElement,
+      target: HTMLElement,
+      sourceSelector: string,
+      sourceNodeAttr: string,
+      targetNodeAttr: string,
+    ) {
+      const sourceNode = visibleNodeElement(source, sourceSelector);
+      const nodeId = sourceNode?.getAttribute(sourceNodeAttr);
+      if (!nodeId) return;
+      const targetNode = nodeElementById(target, targetNodeAttr, nodeId);
+      if (!targetNode) return;
+
+      scrollElementIntoContainer(target, targetNode);
+    }
+
+    function scheduleSync(
+      sourceName: "epub" | "packet",
+      source: HTMLElement,
+      target: HTMLElement,
+      sourceSelector: string,
+      sourceNodeAttr: string,
+      targetNodeAttr: string,
+    ) {
+      if (activeScrollPaneRef.current !== sourceName) return;
+      if (scrollSyncFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollSyncFrameRef.current);
+      }
+      scrollSyncFrameRef.current = window.requestAnimationFrame(() => {
+        scrollSyncFrameRef.current = null;
+        syncScroll(source, target, sourceSelector, sourceNodeAttr, targetNodeAttr);
+      });
+    }
+
+    function handleEpubScroll() {
+      scheduleSync(
+        "epub",
+        epubScrollPane,
+        generatedScrollPane,
+        "[data-node-id]",
+        "data-node-id",
+        "data-packet-node-id",
+      );
+    }
+
+    function handleGeneratedScroll() {
+      scheduleSync(
+        "packet",
+        generatedScrollPane,
+        epubScrollPane,
+        "[data-packet-node-id]",
+        "data-packet-node-id",
+        "data-node-id",
+      );
+    }
+
+    function handleEpubUserScroll() {
+      markUserScrollSource("epub");
+    }
+
+    function handlePacketUserScroll() {
+      markUserScrollSource("packet");
+    }
+
+    const userScrollEvents = ["wheel", "pointerdown", "touchstart", "keydown"];
+    for (const eventName of userScrollEvents) {
+      epubScrollPane.addEventListener(eventName, handleEpubUserScroll, {
+        passive: true,
+      });
+      generatedScrollPane.addEventListener(eventName, handlePacketUserScroll, {
+        passive: true,
+      });
+    }
+    epubScrollPane.addEventListener("scroll", handleEpubScroll, {
+      passive: true,
+    });
+    generatedScrollPane.addEventListener("scroll", handleGeneratedScroll, {
+      passive: true,
+    });
+
+    return () => {
+      if (scrollSyncFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollSyncFrameRef.current);
+        scrollSyncFrameRef.current = null;
+      }
+      if (scrollSourceClearRef.current !== null) {
+        window.clearTimeout(scrollSourceClearRef.current);
+        scrollSourceClearRef.current = null;
+      }
+      for (const eventName of userScrollEvents) {
+        epubScrollPane.removeEventListener(eventName, handleEpubUserScroll);
+        generatedScrollPane.removeEventListener(eventName, handlePacketUserScroll);
+      }
+      epubScrollPane.removeEventListener("scroll", handleEpubScroll);
+      generatedScrollPane.removeEventListener("scroll", handleGeneratedScroll);
+    };
+  }, [previewOpen, activeSpineId, markdownPacket, selectedChunkIndex]);
 
   async function openBookPath(nextPath: string) {
     setLoading(true);
@@ -426,7 +548,7 @@ function App() {
                   : undefined
               }
             >
-              <Reader spine={activeSpine} />
+              <Reader ref={epubPaneRef} spine={activeSpine} />
               <div
                 aria-label="Resize viewer and packet preview"
                 className={`resizer${resizingPreview ? " dragging" : ""}`}
@@ -452,6 +574,8 @@ function App() {
                 tabIndex={0}
               />
               <GeneratedPreview
+                scrollRef={generatedPaneScrollRef}
+                spine={activeSpine}
                 packet={markdownPacket}
                 selectedChunkIndex={selectedChunkIndex}
               />
@@ -807,31 +931,83 @@ function budgetLabel(preset: BudgetPreset, customBudgetTokens: number) {
     : (option?.label ?? preset);
 }
 
+function visibleNodeElement(container: HTMLElement, selector: string) {
+  const containerRect = container.getBoundingClientRect();
+  const focusY = containerRect.top + Math.min(96, containerRect.height * 0.25);
+  const nodes = Array.from(container.querySelectorAll<HTMLElement>(selector));
+  return (
+    nodes.find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom >= focusY && rect.top <= containerRect.bottom;
+    }) ?? null
+  );
+}
+
+function nodeElementById(
+  container: HTMLElement,
+  attrName: string,
+  nodeId: string,
+) {
+  return (
+    Array.from(
+      container.querySelectorAll<HTMLElement>(`[${attrName}]`),
+    ).find((node) => node.getAttribute(attrName) === nodeId) ?? null
+  );
+}
+
+function scrollElementIntoContainer(
+  container: HTMLElement,
+  element: HTMLElement,
+) {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  const delta = elementRect.top - containerRect.top - 24;
+  if (Math.abs(delta) < 8) return;
+  container.scrollTop += delta;
+}
+
 function GeneratedPreview({
   packet,
+  scrollRef,
+  spine,
   selectedChunkIndex,
 }: {
   packet: GeneratedMarkdown | null;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  spine: SpineItem | null;
   selectedChunkIndex: number;
 }) {
   const selectedChunk = packet?.chunks[selectedChunkIndex] ?? packet?.chunks[0];
   const previewMarkdown = selectedChunk?.markdown ?? packet?.markdown ?? "";
+  const packetPreview = buildPacketPreview(previewMarkdown, spine, selectedChunk);
 
   return (
     <section className="pane generated-pane" aria-label="Generated packet">
-      <div className="generated-body">
+      <div className="generated-body" ref={scrollRef}>
         {packet ? (
           <>
             <div className="token-badge">
               {selectedChunk?.estimatedTokens ?? packet.estimatedTokens} tokens
               estimated
             </div>
-            <textarea
-              readOnly
+            <pre
               className="preview-box"
-              value={previewMarkdown}
               aria-label="Generated Markdown preview"
-            />
+            >
+              {packetPreview.header}
+            </pre>
+            {packetPreview.nodes.map(({ node, markdown }) => (
+              <pre
+                className="preview-box preview-node"
+                data-packet-node-id={node.id}
+                key={node.id}
+              >
+                {markdown}
+              </pre>
+            ))}
+            {packetPreview.footer ? (
+              <pre className="preview-box">{packetPreview.footer}</pre>
+            ) : null}
           </>
         ) : (
           <div className="preview-box empty">
@@ -841,6 +1017,73 @@ function GeneratedPreview({
       </div>
     </section>
   );
+}
+
+function buildPacketPreview(
+  markdown: string,
+  spine: SpineItem | null,
+  chunk: GeneratedMarkdownChunk | undefined,
+) {
+  if (!spine || !chunk?.startNodeId || !chunk.endNodeId) {
+    return { header: markdown, nodes: [], footer: "" };
+  }
+
+  const start = resolveContentNodeIndex(spine.content.nodes, chunk.startNodeId);
+  const end = resolveContentNodeIndex(spine.content.nodes, chunk.endNodeId);
+  if (start === -1 || end === -1) {
+    return { header: markdown, nodes: [], footer: "" };
+  }
+
+  const [from, to] = start <= end ? [start, end] : [end, start];
+  const marker = "## Excerpt\n\n```markdown\n";
+  const markerIndex = markdown.indexOf(marker);
+  const header =
+    markerIndex === -1 ? "## Excerpt\n\n```markdown\n" : markdown.slice(0, markerIndex + marker.length);
+  const footer = "\n```";
+  const nodes = spine.content.nodes.slice(from, to + 1).map((node) => ({
+    node,
+    markdown: renderContentNodeMarkdown(node),
+  }));
+
+  return { header, nodes, footer };
+}
+
+function resolveContentNodeIndex(nodes: ContentNode[], nodeId: string) {
+  return nodes.findIndex(
+    (node) =>
+      node.id === nodeId || node.children.some((child) => child.id === nodeId),
+  );
+}
+
+function renderContentNodeMarkdown(node: ContentNode) {
+  switch (node.kind) {
+    case "heading": {
+      const level = Math.min(Math.max(node.level ?? 2, 1), 6);
+      return `${"#".repeat(level)} ${node.text ?? ""}`;
+    }
+    case "paragraph":
+      return node.text ?? "";
+    case "blockquote":
+      return (node.text ?? "")
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+    case "code":
+      return `\`\`\`\n${node.text ?? ""}\n\`\`\``;
+    case "list":
+      return node.children
+        .map((child) => `- ${child.text ?? ""}`)
+        .join("\n");
+    case "image": {
+      const src = node.attrs.src ? `: ${node.attrs.src}` : "";
+      const alt = node.text ? `\nAlt text: ${node.text}` : "";
+      return `[Image omitted${src}]${alt}`;
+    }
+    case "thematicBreak":
+      return "---";
+    default:
+      return node.text ?? node.kind;
+  }
 }
 
 function ChunkSelector({
@@ -1026,29 +1269,31 @@ function SpineList({
   );
 }
 
-function Reader({ spine }: { spine: SpineItem | null }) {
-  if (!spine) {
+const Reader = React.forwardRef<HTMLElement, { spine: SpineItem | null }>(
+  function Reader({ spine }, ref) {
+    if (!spine) {
+      return (
+        <article className="pane epub-pane" ref={ref}>
+          <p>No readable spine content was found.</p>
+        </article>
+      );
+    }
+
     return (
-      <article className="pane epub-pane">
-        <p>No readable spine content was found.</p>
+      <article className="pane epub-pane" ref={ref}>
+        <div className="epub-meta">
+          <span>{spine.title || "EPUB chapter"}</span>
+          <strong>{spine.content.nodes.length} semantic blocks</strong>
+        </div>
+        <div className="epub-body">
+          {spine.content.nodes.map((node) => (
+            <ContentBlock key={node.id} node={node} />
+          ))}
+        </div>
       </article>
     );
-  }
-
-  return (
-    <article className="pane epub-pane">
-      <div className="epub-meta">
-        <span>{spine.title || "EPUB chapter"}</span>
-        <strong>{spine.content.nodes.length} semantic blocks</strong>
-      </div>
-      <div className="epub-body">
-        {spine.content.nodes.map((node) => (
-          <ContentBlock key={node.id} node={node} />
-        ))}
-      </div>
-    </article>
-  );
-}
+  },
+);
 
 function ContentBlock({ node }: { node: ContentNode }) {
   const common = {
