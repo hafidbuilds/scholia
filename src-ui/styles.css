@@ -58,39 +58,6 @@ button:disabled {
   min-height: 0;
 }
 
-.titlebar {
-  -webkit-app-region: drag;
-  align-items: center;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  height: 44px;
-  justify-content: space-between;
-  padding: 0 18px;
-  flex-shrink: 0;
-}
-
-.title {
-  color: var(--muted);
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.win-controls {
-  -webkit-app-region: no-drag;
-  display: flex;
-  gap: 8px;
-}
-
-.win-btn {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  height: 12px;
-  width: 12px;
-}
-
 .error-banner {
   background: oklch(97% 0.02 30);
   border-bottom: 1px solid oklch(82% 0.05 30);

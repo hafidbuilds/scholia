@@ -425,15 +425,6 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="titlebar">
-        <div className="title">Scholia</div>
-        <div className="win-controls" aria-hidden="true">
-          <span className="win-btn" />
-          <span className="win-btn" />
-          <span className="win-btn" />
-        </div>
-      </header>
-
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="body">
