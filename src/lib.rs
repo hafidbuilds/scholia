@@ -1043,7 +1043,7 @@ fn parse_content_document(
                             dom_path(&path_stack),
                         ));
                     }
-                    "pre" | "code" if block.is_none() => {
+                    "pre" if block.is_none() => {
                         flush_block(&mut block, &mut nodes, href, spine_item_id, &mut counter);
                         block = Some(BlockBuilder::new(
                             ContentKind::Code,
@@ -1106,14 +1106,14 @@ fn parse_content_document(
             }
             XmlEventKind::Text => {
                 if let Some(builder) = &mut block {
-                    push_text(&mut builder.text, &event.name);
+                    builder.push_text(&event.name);
                 }
             }
             XmlEventKind::End => {
                 let name = local_name(&event.name);
                 if matches!(
                     name,
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "blockquote" | "pre" | "code"
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "blockquote" | "pre"
                 ) {
                     if in_list && name == "li" {
                         if let Some(item) = block.take() {
@@ -1185,7 +1185,7 @@ impl BlockBuilder {
     }
 
     fn into_node(self, href: &str, id: &str) -> ContentNode {
-        let text = normalize_space(&self.text);
+        let text = normalize_block_text(self.kind, &self.text);
         ContentNode {
             id: id.to_string(),
             kind: self.kind,
@@ -1200,6 +1200,14 @@ impl BlockBuilder {
             },
         }
     }
+
+    fn push_text(&mut self, text: &str) {
+        if self.kind == ContentKind::Code {
+            self.text.push_str(text);
+        } else {
+            push_text(&mut self.text, text);
+        }
+    }
 }
 
 fn flush_block(
@@ -1210,7 +1218,7 @@ fn flush_block(
     counter: &mut usize,
 ) {
     if let Some(builder) = block.take() {
-        let text = normalize_space(&builder.text);
+        let text = normalize_block_text(builder.kind, &builder.text);
         if !text.is_empty() || builder.kind == ContentKind::ThematicBreak {
             *counter += 1;
             nodes.push(builder.into_node(href, &node_id(spine_item_id, *counter)));
@@ -1345,6 +1353,28 @@ fn normalize_space(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn normalize_block_text(kind: ContentKind, value: &str) -> String {
+    if kind == ContentKind::Code {
+        normalize_code_text(value)
+    } else {
+        normalize_space(value)
+    }
+}
+
+fn normalize_code_text(value: &str) -> String {
+    let text = value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim_matches('\n')
+        .to_string();
+
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        text
+    }
+}
+
 fn parent_dir(path: &str) -> String {
     Path::new(path)
         .parent()
@@ -1413,6 +1443,46 @@ mod tests {
                 .iter()
                 .any(|node| node.kind == ContentKind::List)
         );
+    }
+
+    #[test]
+    fn preserves_code_block_whitespace() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let code = book.spine[0]
+            .content
+            .nodes
+            .iter()
+            .find(|node| node.kind == ContentKind::Code)
+            .expect("code block parses");
+
+        assert_eq!(
+            code.text.as_deref(),
+            Some("if ready:\n  commit()\nelse:\n  rollback()")
+        );
+
+        let markdown = render_nodes_as_markdown(&[code.clone()]);
+        assert!(markdown.contains("if ready:\n  commit()\nelse:\n  rollback()"));
+    }
+
+    #[test]
+    fn does_not_render_standalone_inline_code_as_code_blocks() {
+        let epub = fixture_epub();
+        let book = open_epub_bytes(&epub).expect("valid fixture EPUB parses");
+        let chapter = &book.spine[0];
+        let code_nodes = chapter
+            .content
+            .nodes
+            .iter()
+            .filter(|node| node.kind == ContentKind::Code)
+            .count();
+
+        assert_eq!(code_nodes, 1);
+        assert!(!chapter
+            .content
+            .nodes
+            .iter()
+            .any(|node| node.kind == ContentKind::Code && node.text.as_deref() == Some("package")));
     }
 
     #[test]
@@ -1651,6 +1721,12 @@ mod tests {
       <li>Leader</li>
       <li>Follower</li>
     </ul>
+    <pre><code>if ready:
+  commit()
+else:
+  rollback()</code></pre>
+    <code>package</code>
+    <code>main</code>
   </body>
 </html>"#,
         );

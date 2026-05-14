@@ -660,11 +660,14 @@ button:disabled {
   margin: 18px 0;
   overflow: auto;
   padding: 18px;
+  tab-size: 2;
+  white-space: pre;
 }
 
 .epub-body code {
   font-family: var(--font-mono);
   font-size: 12.5px;
+  white-space: inherit;
 }
 
 .image-placeholder,
